@@ -1,11 +1,12 @@
 """/forget — delete a capture from SQLite AND its GitHub representation.
 
 Cascade rules:
-- Deleting a non-why capture also deletes all its why children (the whys
-  lived inline in the parent's file, which is about to disappear anyway)
-  and clears any `daily.reflection_capture_id` pointer at this row.
-- Deleting a why re-renders its parent's file without the why — we don't
-  delete the parent or the other whys.
+- Deleting a primary capture also deletes all its inline children (whys and
+  highlights, which lived inside the parent's file that's about to
+  disappear) and clears any `daily.reflection_capture_id` pointer at this
+  row.
+- Deleting a why or highlight re-renders its parent's file without that
+  child — we don't delete the parent or the other siblings.
 
 GitHub errors are logged but don't block the SQLite delete. The "forget"
 contract is: the row is gone from the owner's own commonplace. If the
@@ -43,8 +44,8 @@ async def forget_capture(
         return None
 
     kind = row["kind"]
-    if kind == "why":
-        return await _forget_why(conn, row, settings=settings)
+    if kind in ("why", "highlight"):
+        return await _forget_child(conn, row, settings=settings)
     return await _forget_primary(conn, row, settings=settings)
 
 
@@ -71,11 +72,12 @@ async def _forget_primary(
         except Exception:
             log.exception("forget: GitHub delete failed for capture %s", capture_id)
 
-    # Cascade: delete all why children (they lived inside the parent's file).
+    # Cascade: delete all inline children (whys and highlights live inside
+    # the parent's file, which is about to disappear).
     async with conn.execute(
         "DELETE FROM captures WHERE parent_id = ? RETURNING id", (capture_id,),
     ) as cur:
-        removed_whys = [int(r[0]) for r in await cur.fetchall()]
+        removed_children = [int(r[0]) for r in await cur.fetchall()]
 
     # Clear any daily.reflection_capture_id pointing at this row.
     await conn.execute(
@@ -90,74 +92,87 @@ async def _forget_primary(
         "id": capture_id,
         "kind": row["kind"],
         "github_deleted": github_deleted,
-        "cascaded_whys": removed_whys,
+        "cascaded_children": removed_children,
     }
 
 
-async def _forget_why(
-    conn: aiosqlite.Connection, why_row: Any, *, settings: Settings,
+async def _forget_child(
+    conn: aiosqlite.Connection, child_row: Any, *, settings: Settings,
 ) -> dict[str, Any]:
-    """Delete a why: re-render parent's file without this why, keep siblings."""
-    why_id = int(why_row["id"])
-    parent_id = why_row["parent_id"]
+    """Delete a why or highlight: re-render parent's file without this child,
+    keep the siblings (of both kinds) intact."""
+    child_id = int(child_row["id"])
+    kind = child_row["kind"]
+    parent_id = child_row["parent_id"]
 
     if parent_id is None:
-        # Orphan why with no parent to re-render — just drop the row.
-        await conn.execute("DELETE FROM captures WHERE id = ?", (why_id,))
+        await conn.execute("DELETE FROM captures WHERE id = ?", (child_id,))
         await conn.commit()
-        return {"id": why_id, "kind": "why", "github_deleted": False, "cascaded_whys": []}
+        return {"id": child_id, "kind": kind, "github_deleted": False, "cascaded_children": []}
 
     async with conn.execute(
         "SELECT * FROM captures WHERE id = ?", (parent_id,),
     ) as cur:
         parent = await cur.fetchone()
     if parent is None:
-        # Parent's gone for some reason — just drop the why.
-        await conn.execute("DELETE FROM captures WHERE id = ?", (why_id,))
+        await conn.execute("DELETE FROM captures WHERE id = ?", (child_id,))
         await conn.commit()
-        return {"id": why_id, "kind": "why", "github_deleted": False, "cascaded_whys": []}
+        return {"id": child_id, "kind": kind, "github_deleted": False, "cascaded_children": []}
 
-    # Rebuild parent's file with the remaining siblings.
+    # Rebuild parent's file with the remaining siblings, split by kind so the
+    # renderer can place each under its right section.
     async with conn.execute(
-        "SELECT * FROM captures WHERE parent_id = ? AND id != ? ORDER BY created_at",
-        (parent_id, why_id),
+        "SELECT * FROM captures WHERE parent_id = ? AND kind = 'why' AND id != ? "
+        "ORDER BY created_at",
+        (parent_id, child_id),
     ) as cur:
-        siblings = list(await cur.fetchall())
+        why_siblings = list(await cur.fetchall())
+    async with conn.execute(
+        "SELECT * FROM captures WHERE parent_id = ? AND kind = 'highlight' AND id != ? "
+        "ORDER BY created_at",
+        (parent_id, child_id),
+    ) as cur:
+        highlight_siblings = list(await cur.fetchall())
 
     github_updated = False
     if parent["github_sha"] and github_sync.is_configured(settings):
         try:
-            markdown = markdown_out.render_capture_markdown(parent, why_children=siblings)
+            markdown = markdown_out.render_capture_markdown(
+                parent,
+                why_children=why_siblings,
+                highlight_children=highlight_siblings,
+            )
             path = markdown_out.file_path_for(parent)
             new_sha = await github_sync.put_file(
                 settings=settings,
                 path=path,
                 content=markdown,
-                message=f"forget: remove why {why_id} from capture {parent_id}",
+                message=f"forget: remove {kind} {child_id} from capture {parent_id}",
                 existing_sha=parent["github_sha"],
             )
             await conn.execute(
                 "UPDATE captures SET github_sha = ? WHERE id = ?",
                 (new_sha, int(parent["id"])),
             )
-            # Siblings share the parent file's sha.
-            if siblings:
-                placeholders = ",".join("?" for _ in siblings)
+            sibling_ids = [int(s["id"]) for s in why_siblings] + \
+                          [int(s["id"]) for s in highlight_siblings]
+            if sibling_ids:
+                placeholders = ",".join("?" for _ in sibling_ids)
                 await conn.execute(
                     f"UPDATE captures SET github_sha = ? WHERE id IN ({placeholders})",
-                    (new_sha, *[int(s["id"]) for s in siblings]),
+                    (new_sha, *sibling_ids),
                 )
             github_updated = True
         except Exception:
             log.exception("forget: parent file re-render failed")
 
-    await conn.execute("DELETE FROM captures WHERE id = ?", (why_id,))
+    await conn.execute("DELETE FROM captures WHERE id = ?", (child_id,))
     await conn.commit()
     return {
-        "id": why_id,
-        "kind": "why",
+        "id": child_id,
+        "kind": kind,
         "github_deleted": github_updated,
-        "cascaded_whys": [],
+        "cascaded_children": [],
     }
 
 

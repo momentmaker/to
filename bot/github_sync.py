@@ -189,8 +189,8 @@ async def _fetch_row(conn: aiosqlite.Connection, query: str, args: tuple) -> aio
 def _commit_message(row: Any) -> str:
     kind = row["kind"]
     date = row["local_date"]
-    if kind == "why":
-        return f"why update {date} (capture {row['id']})"
+    if kind in ("why", "highlight"):
+        return f"{kind} update {date} (capture {row['id']})"
     return f"{kind} {date} (capture {row['id']})"
 
 
@@ -217,15 +217,22 @@ async def push_capture(
         log.warning("capture %s not found, cannot push", capture_id)
         return False
 
-    if row["kind"] == "why":
-        return await _push_why(row, settings=settings, conn=conn, client=client)
+    if row["kind"] in ("why", "highlight"):
+        return await _push_child(row, settings=settings, conn=conn, client=client)
 
     whys = await _fetch_rows(
         conn,
         "SELECT * FROM captures WHERE parent_id = ? AND kind = 'why' ORDER BY created_at",
         (capture_id,),
     )
-    markdown = render_capture_markdown(row, why_children=whys)
+    highlights = await _fetch_rows(
+        conn,
+        "SELECT * FROM captures WHERE parent_id = ? AND kind = 'highlight' ORDER BY created_at",
+        (capture_id,),
+    )
+    markdown = render_capture_markdown(
+        row, why_children=whys, highlight_children=highlights,
+    )
     path = file_path_for(row)
     sha = await put_file(
         settings=settings,
@@ -239,49 +246,53 @@ async def push_capture(
         "UPDATE captures SET github_sha = ? WHERE id = ?",
         (sha, capture_id),
     )
-    # Whys that were bundled into this file share the sha.
-    if whys:
-        why_ids = [w["id"] for w in whys]
-        placeholders = ",".join("?" for _ in why_ids)
+    # Whys and highlights bundled into this file share the sha.
+    child_ids = [r["id"] for r in whys] + [r["id"] for r in highlights]
+    if child_ids:
+        placeholders = ",".join("?" for _ in child_ids)
         await conn.execute(
             f"UPDATE captures SET github_sha = ? WHERE id IN ({placeholders})",
-            (sha, *why_ids),
+            (sha, *child_ids),
         )
     await conn.commit()
     return True
 
 
-async def _push_why(
-    why_row: Any, *, settings: Settings, conn: aiosqlite.Connection,
+async def _push_child(
+    child_row: Any, *, settings: Settings, conn: aiosqlite.Connection,
     client: httpx.AsyncClient | None = None,
 ) -> bool:
-    parent_id = why_row["parent_id"]
+    """Push a why or highlight by routing through its parent — the child
+    renders inline in the parent's file, so what we're really doing is
+    rewriting that file with the current list of children."""
+    kind = child_row["kind"]
+    parent_id = child_row["parent_id"]
     if parent_id is None:
-        log.info("why %s has no parent_id, nothing to update", why_row["id"])
+        log.info("%s %s has no parent_id, nothing to update", kind, child_row["id"])
         return False
     parent = await _fetch_row(conn, "SELECT * FROM captures WHERE id = ?", (parent_id,))
     if parent is None:
-        log.warning("parent %s of why %s missing", parent_id, why_row["id"])
+        log.warning("parent %s of %s %s missing", parent_id, kind, child_row["id"])
         return False
     if not parent["github_sha"]:
         log.info(
-            "parent %s not yet synced; deferring why %s to nightly_sync",
-            parent_id, why_row["id"],
+            "parent %s not yet synced; deferring %s %s to nightly_sync",
+            parent_id, kind, child_row["id"],
         )
         return False
-    # Push through the parent — _fetch_rows picks up all siblings including this why.
     return await push_capture(parent_id, settings=settings, conn=conn, client=client)
 
 
 async def unsynced_capture_ids(conn: aiosqlite.Connection) -> list[int]:
     """Captures still needing a GitHub push. Orders parents first so their
-    files exist before any orphaned why tries to update them.
+    files exist before any orphaned child (why or highlight) tries to
+    update them.
     """
     async with conn.execute(
         """
         SELECT id FROM captures
         WHERE github_sha IS NULL
-        ORDER BY (kind = 'why') ASC, id ASC
+        ORDER BY (kind IN ('why', 'highlight')) ASC, id ASC
         """
     ) as cur:
         rows = await cur.fetchall()

@@ -52,6 +52,7 @@ Then, still in @BotFather:
 status - corpus + budget + config
 ask - consult your past self
 reflect - force today's prompt
+highlight - attach a passage to a capture (as reply)
 forget - delete a capture (id or "last")
 export - force weekly digest (opt-in)
 tweetweekly - post the weekly tweet from digest.md
@@ -201,6 +202,7 @@ Then send anything — a line you overheard, a link, a photo of a book page, a v
 | `/ask <question>` | Consult your past self. Supports `since:YYYY-MM-DD` and `limit:N` anywhere in the question |
 | `/reflect` | Force today's evening prompt to fire now |
 | `/forget <id>` or `/forget last` | Irrevocably delete a capture (SQLite + GitHub). `last` targets the most recent |
+| `/highlight <text>` (as a reply) | Attach a verbatim passage to a previous capture. Renders inline inside the parent's `.md`. Great for saving specific lines from a PDF or article you already captured |
 | `/skip` | Clear any pending why-question or reflection prompt |
 | `/setmark <glyph>` | Override the current week's mark (one emoji or character) |
 | `/setvow <text>` | Pin the line you want above the year in fz.ax |

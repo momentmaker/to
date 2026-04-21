@@ -30,8 +30,9 @@ Structure:
     >
     > because the title caught me
 
-"why" captures render **inline inside their parent's file**, not as a separate
-file. The parent's github_sha reflects the file after the last why was added.
+"why" and "highlight" captures render **inline inside their parent's file**,
+not as separate files. The parent's github_sha reflects the file after the
+last child was added.
 """
 
 from __future__ import annotations
@@ -97,11 +98,13 @@ def render_capture_markdown(
     row: Any,
     *,
     why_children: list[Any] | None = None,
+    highlight_children: list[Any] | None = None,
 ) -> str:
     """Emit the full Markdown string for a capture row.
 
-    `why_children` is the ordered list of why-rows that belong to this
-    capture. None/empty = no why section.
+    `why_children` and `highlight_children` are ordered lists of child rows
+    that render inline under the parent (same file). None/empty sections
+    are omitted.
     """
     fm: dict[str, Any] = {
         "id": row["id"],
@@ -154,6 +157,13 @@ def render_capture_markdown(
     if why_children:
         body_parts.append("## why?")
         for child in why_children:
+            ts = _row_get(child, "created_at") or ""
+            child_raw = (_row_get(child, "raw") or "").strip().replace("\n", "\n> ")
+            body_parts.append(f"> _{ts}_\n>\n> {child_raw}")
+
+    if highlight_children:
+        body_parts.append("## highlights")
+        for child in highlight_children:
             ts = _row_get(child, "created_at") or ""
             child_raw = (_row_get(child, "raw") or "").strip().replace("\n", "\n> ")
             body_parts.append(f"> _{ts}_\n>\n> {child_raw}")

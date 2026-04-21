@@ -96,7 +96,7 @@ async def test_forget_primary_cascades_to_whys(conn):
     with patch("bot.github_sync.delete_file", AsyncMock(return_value=True)):
         result = await forget.forget_capture(conn, parent, settings=_settings())
 
-    assert set(result["cascaded_whys"]) == {why_a, why_b}
+    assert set(result["cascaded_children"]) == {why_a, why_b}
     assert await db_mod.count_captures(conn) == 0
 
 

@@ -554,14 +554,95 @@ async def forget_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     bits = [f"forgotten: capture {result['id']} ({result['kind']})"]
-    if result["cascaded_whys"]:
+    if result["cascaded_children"]:
+        n = len(result["cascaded_children"])
         bits.append(
-            f"  also dropped {len(result['cascaded_whys'])} why "
-            f"{'child' if len(result['cascaded_whys']) == 1 else 'children'}"
+            f"  also dropped {n} inline child{'' if n == 1 else 'ren'} "
+            f"(why/highlight)"
         )
     if not result["github_deleted"] and github_sync.is_configured(settings):
         bits.append("  (github side not updated — check logs)")
     await update.message.reply_text("\n".join(bits))
+
+
+async def highlight_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/highlight <text> — attach a verbatim highlight to a previous capture.
+
+    Must be a reply to the message that created the parent capture. The
+    highlight renders inline inside the parent's markdown (same pattern as
+    /why) and pushes to GitHub via the parent's file.
+    """
+    if not await _ensure_owner(update, context):
+        return
+    if update.message is None:
+        return
+    if update.message.chat.type != "private":
+        return
+
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+    dob = db.settings_dob(settings.DOB)
+
+    parent_msg = update.message.reply_to_message
+    if parent_msg is None:
+        await update.message.reply_text(
+            "/highlight must be a reply — reply to the capture's original "
+            "message with /highlight <text>."
+        )
+        return
+
+    text = " ".join(context.args) if context.args else ""
+    text = text.strip()
+    if not text:
+        await update.message.reply_text(
+            "usage: /highlight <text>   (as a reply to a previous capture)"
+        )
+        return
+
+    async with conn.execute(
+        "SELECT id FROM captures WHERE source = 'telegram' AND telegram_msg_id = ?",
+        (parent_msg.message_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        await update.message.reply_text(
+            "couldn't find a capture for that message. reply to the message "
+            "you originally sent (not the bot's ack)."
+        )
+        return
+    parent_id = int(row[0])
+
+    capture_id = await db.insert_capture(
+        conn,
+        kind="highlight",
+        source="telegram",
+        raw=text,
+        parent_id=parent_id,
+        telegram_msg_id=update.message.message_id,
+        dob=dob,
+        tz_name=settings.TIMEZONE,
+    )
+    if capture_id is None:
+        return
+
+    await update.message.reply_text(f"{ACK_TEXT} (highlight → {parent_id})")
+
+    # Push through the parent so the updated markdown lands in GitHub.
+    if github_sync.is_configured(settings):
+        asyncio.create_task(
+            _push_highlight_to_github(
+                capture_id=capture_id, settings=settings, conn=conn,
+            )
+        )
+
+
+async def _push_highlight_to_github(
+    *, capture_id: int, settings: Settings, conn,
+) -> None:
+    try:
+        await github_sync.push_capture(capture_id, settings=settings, conn=conn)
+    except Exception:
+        log.exception("highlight push to github failed for capture %s", capture_id)
 
 
 _WEEK_ARG_RE = re.compile(r"^\d{4}-w\d{2}$")
