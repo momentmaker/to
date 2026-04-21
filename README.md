@@ -345,7 +345,7 @@ LLM_PROVIDER_TWEET=openai
 LLM_PROVIDER_VISION=openai
 ```
 
-**Running Anthropic-only?** Voice notes won't transcribe (Whisper is OpenAI-only — there's no Anthropic equivalent). The capture still lands with a `transcript_error` field; every other path (text, URL, photo, HN, Oracle, digest) works fine on Claude alone.
+**Running Anthropic-only?** Voice notes won't transcribe (Whisper is OpenAI-only — there's no Anthropic equivalent). The capture still lands with a `transcript_error` field; every other path (text, URL, photo, PDF, HN, Oracle, digest) works fine on Claude alone.
 
 ### Schedule
 
@@ -440,7 +440,7 @@ No external cron. Everything runs in the single Python process. Scheduler is APS
 - **User is always owner.** Every handler checks `TELEGRAM_OWNER_ID`. Non-owner chats are silently dropped.
 - **Captures are append-only by default.** Only `/forget` removes them.
 - **Dedupe by `(source, telegram_msg_id)`.** Telegram webhook retries won't create duplicates.
-- **Whys render inline inside their parent's `.md` file.** They have their own row in SQLite but no separate GitHub file.
+- **Whys and highlights render inline inside their parent's `.md` file.** They have their own row in SQLite but no separate GitHub file. Whys get a `## why?` section, highlights a `## highlights` section.
 - **Quote-only enforcement is a normalized-substring check.** Case, punctuation, and whitespace are normalized; every sentence in the essay must be a substring of the combined corpus.
 - **Digest is idempotent per `fz_week_idx`.** Running twice in the same week is a no-op unless `force=True`.
 - **User-set marks (`/setmark`) survive digest runs.** The code preserves them via `user_mark_override`.

@@ -52,7 +52,8 @@ async def forget_capture(
 async def _forget_primary(
     conn: aiosqlite.Connection, row: Any, *, settings: Settings,
 ) -> dict[str, Any]:
-    """Delete a non-why capture: its whys, its daily ref, the GitHub file, the row."""
+    """Delete a primary capture: all its inline children (whys + highlights),
+    its daily reflection ref, the GitHub file, and the row itself."""
     capture_id = int(row["id"])
     github_deleted = False
 

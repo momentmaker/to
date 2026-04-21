@@ -126,6 +126,33 @@ async def test_highlight_happy_path_creates_child(conn):
 
 
 @pytest.mark.asyncio
+async def test_highlight_reply_to_why_resolves_to_root_parent(conn):
+    """Replying to a why's original message must attach the highlight to the
+    root primary — chained children (highlight → why → primary) would
+    render incoherently since whys don't have their own files.
+    """
+    from bot.handlers import highlight_handler
+    primary = await _insert(
+        conn, kind="url", raw="the link", telegram_msg_id=10,
+    )
+    why = await _insert(
+        conn, kind="why", raw="because", parent_id=primary,
+        telegram_msg_id=11,
+    )
+    assert primary is not None and why is not None
+
+    update = _mock_update(text="x", reply_to_msg_id=11)  # replying to the why
+    await highlight_handler(update, _context(conn, ["the", "line"]))
+
+    async with conn.execute(
+        "SELECT parent_id FROM captures WHERE kind='highlight'",
+    ) as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    assert row["parent_id"] == primary  # NOT the why's id
+
+
+@pytest.mark.asyncio
 async def test_highlight_joins_multi_word_args_verbatim(conn):
     from bot.handlers import highlight_handler
     parent_id = await _insert(conn, telegram_msg_id=42)

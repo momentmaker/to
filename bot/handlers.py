@@ -517,9 +517,10 @@ async def export_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def forget_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/forget <id>  or  /forget last  — irrevocably remove a capture.
 
-    Cascades: deleting a non-why capture also drops its why children and
-    clears any daily.reflection_capture_id pointer. Deleting a why
-    re-renders the parent's GitHub file without it.
+    Cascades: deleting a primary capture also drops its inline children
+    (whys + highlights) and clears any daily.reflection_capture_id
+    pointer. Deleting a why or highlight re-renders the parent's GitHub
+    file without that child.
     """
     if not await _ensure_owner(update, context):
         return
@@ -600,7 +601,8 @@ async def highlight_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     async with conn.execute(
-        "SELECT id FROM captures WHERE source = 'telegram' AND telegram_msg_id = ?",
+        "SELECT id, kind, parent_id FROM captures "
+        "WHERE source = 'telegram' AND telegram_msg_id = ?",
         (parent_msg.message_id,),
     ) as cur:
         row = await cur.fetchone()
@@ -610,7 +612,13 @@ async def highlight_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "you originally sent (not the bot's ack)."
         )
         return
-    parent_id = int(row[0])
+    # If the user replied to a why or highlight, attach the new highlight to
+    # the ROOT primary instead — chained children would render incoherently
+    # because whys/highlights don't have their own files.
+    if row["kind"] in ("why", "highlight") and row["parent_id"] is not None:
+        parent_id = int(row["parent_id"])
+    else:
+        parent_id = int(row["id"])
 
     capture_id = await db.insert_capture(
         conn,

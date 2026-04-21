@@ -4,9 +4,9 @@ GitHub REST API: PUT /repos/{owner}/{repo}/contents/{path}
   - body: {message, content (base64), branch, sha? (for update)}
   - returns: {content: {sha, path, ...}}
 
-Why captures don't get their own file — their text is rendered inline into
-their parent's markdown. Updating a why re-PUTs the parent file with the
-current list of whys attached.
+Why and highlight captures don't get their own file — their text is rendered
+inline into their parent's markdown. Updating either re-PUTs the parent file
+with the current list of whys + highlights attached.
 """
 
 from __future__ import annotations
