@@ -118,6 +118,12 @@ def render_capture_markdown(
     parent_id = _row_get(row, "parent_id")
     if parent_id:
         fm["parent_id"] = parent_id
+    # Breadcrumb back to the original Telegram message. Useful for image
+    # captures — we don't store the photo file in the repo, so this is how
+    # you re-fetch the original from your chat history.
+    tg_msg_id = _row_get(row, "telegram_msg_id")
+    if tg_msg_id:
+        fm["telegram_msg_id"] = tg_msg_id
 
     processed = _parse_json(_row_get(row, "processed")) or {}
     title = processed.get("title")

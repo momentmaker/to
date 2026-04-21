@@ -79,6 +79,28 @@ async def test_markdown_emits_valid_toml_frontmatter(conn):
 
 
 @pytest.mark.asyncio
+async def test_markdown_frontmatter_includes_telegram_msg_id_when_present(conn):
+    """telegram_msg_id is the breadcrumb back to the original chat message
+    (needed to re-fetch the photo from Telegram for image captures)."""
+    row = await _insert(conn, kind="text", telegram_msg_id=9876)
+    out = render_capture_markdown(row)
+    fm_end = out.index("\n+++\n", 3)
+    meta = tomllib.loads(out[4:fm_end + 1])
+    assert meta["telegram_msg_id"] == 9876
+
+
+@pytest.mark.asyncio
+async def test_markdown_frontmatter_omits_telegram_msg_id_when_absent(conn):
+    """Captures without a telegram_msg_id (e.g. scheduled-generated rows)
+    shouldn't have the field at all."""
+    row = await _insert(conn, kind="text")
+    out = render_capture_markdown(row)
+    fm_end = out.index("\n+++\n", 3)
+    meta = tomllib.loads(out[4:fm_end + 1])
+    assert "telegram_msg_id" not in meta
+
+
+@pytest.mark.asyncio
 async def test_markdown_body_contains_quotes_summary_and_raw(conn):
     row = await _insert(
         conn,
