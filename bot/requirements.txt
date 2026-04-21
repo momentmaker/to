@@ -14,3 +14,4 @@ apscheduler>=3.10.0
 tomli_w>=1.0.0
 grapheme>=0.6.0
 tweepy>=4.14.0
+pypdf>=5.1.0

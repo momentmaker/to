@@ -6,6 +6,7 @@ from bot import db
 from bot.config import Settings
 from bot.handlers import (
     ask_handler,
+    document_message_handler,
     error_handler,
     export_handler,
     forget_handler,
@@ -92,6 +93,7 @@ async def create_bot_app(settings: Settings):
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_message_handler))
     app.add_handler(MessageHandler(filters.PHOTO, photo_message_handler))
+    app.add_handler(MessageHandler(filters.Document.PDF, document_message_handler))
     app.add_error_handler(error_handler)
 
     return app

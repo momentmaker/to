@@ -16,6 +16,7 @@ from bot.config import Settings
 from bot.digest import fz_state as fz_state_mod
 from bot.digest import validate as digest_validate
 from bot.digest import weekly as digest_weekly
+from bot.ingest import pdf as pdf_mod
 from bot.ingest import vision as vision_mod
 from bot.ingest import voice as voice_mod
 from bot.ingest.router import classify_text, scrape_url
@@ -883,6 +884,103 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         asyncio.create_task(
             _process_in_background(
                 capture_id=capture_id, content=vision_text,
+                settings=settings, providers=providers, db_conn=conn,
+            )
+        )
+
+
+_PDF_MIME = "application/pdf"
+
+
+async def document_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Telegram Document messages — currently only PDFs.
+
+    Tier the PDF by token estimate:
+      - tiny (≤5k) / medium (5k–20k): extract, insert, process normally
+      - large (>20k tokens or >50 pages): reject with a nudge to send highlights
+    """
+    if not await _ensure_owner(update, context):
+        return
+    if update.message is None:
+        return
+    if update.message.chat.type != "private":
+        return
+
+    doc = update.message.document
+    if doc is None:
+        return
+    if (doc.mime_type or "").lower() != _PDF_MIME:
+        # Other document types aren't supported yet — keep silent so we don't
+        # spam the owner when they forward random files.
+        return
+
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+    providers: Providers | None = context.bot_data.get("providers")
+    dob = db.settings_dob(settings.DOB)
+
+    try:
+        file = await doc.get_file()
+        pdf_bytes = bytes(await file.download_as_bytearray())
+    except Exception:
+        log.exception("pdf download failed")
+        await update.message.reply_text("could not fetch the pdf. try again.")
+        return
+
+    extract = pdf_mod.extract_pdf_bytes(pdf_bytes)
+
+    if extract.rejected_reason:
+        await update.message.reply_text(extract.rejected_reason)
+        return
+
+    if not extract.text.strip():
+        await update.message.reply_text(
+            "the pdf has no selectable text — likely a scan. "
+            "send a photo of the passage instead so vision can read it."
+        )
+        return
+
+    filename = doc.file_name or "document.pdf"
+    caption = update.message.caption or ""
+    payload: dict[str, Any] = {
+        "filename": filename,
+        "page_count": extract.page_count,
+        "char_count": extract.char_count,
+        "token_estimate": extract.token_estimate,
+        "tier": extract.tier,
+    }
+    if caption:
+        payload["caption"] = caption
+    forward = _forward_origin_payload(update.message)
+    if forward:
+        payload["forward_origin"] = forward
+
+    capture_id = await db.insert_capture(
+        conn,
+        kind="pdf",
+        source="telegram",
+        raw=extract.text,
+        payload=payload,
+        telegram_msg_id=update.message.message_id,
+        dob=dob,
+        tz_name=settings.TIMEZONE,
+    )
+    if capture_id is None:
+        return
+
+    await update.message.reply_text(
+        f"{ACK_TEXT} ({extract.page_count}p · ~{extract.token_estimate} tokens · {extract.tier})"
+    )
+
+    if providers is not None:
+        # process.process_capture truncates at 30k chars before the LLM call,
+        # so medium PDFs are naturally cost-bounded.
+        content_for_ingest = extract.text
+        if caption:
+            content_for_ingest = f"{caption}\n\n{content_for_ingest}"
+        asyncio.create_task(
+            _process_in_background(
+                capture_id=capture_id, content=content_for_ingest,
                 settings=settings, providers=providers, db_conn=conn,
             )
         )

@@ -12,7 +12,7 @@ orchurator is here. say anything and i will keep it.
 
 ## What this is
 
-- A **Telegram bot** you DM your notebooks into — text, URLs, voice notes, photos, HN threads, tweets.
+- A **Telegram bot** you DM your notebooks into — text, URLs, voice notes, photos, PDFs, HN threads, tweets.
 - A **structured ingest pipeline** — Claude/GPT extracts title, tags, quotes, and a one-line summary from every capture.
 - A **GitHub-backed archive** — every capture lands in a private repo as Markdown with TOML frontmatter, organized `YYYY-wNN/`.
 - An **Oracle** (`/ask`) — consult your past self via BM25 retrieval + orchurator synthesis citing your own fragments by `[N]`.
@@ -174,7 +174,7 @@ Open your main bot in Telegram. Send `/start`. You should see:
 orchurator is here. say anything and i will keep it.
 ```
 
-Then send anything — a line you overheard, a link, a photo of a book page, a voice note. You'll get `kept.` within a second, and within 60 seconds a new `.md` file in your GitHub captures repo.
+Then send anything — a line you overheard, a link, a photo of a book page, a voice note, a short PDF. You'll get `kept.` within a second, and within 60 seconds a new `.md` file in your GitHub captures repo.
 
 ---
 
@@ -188,6 +188,7 @@ Then send anything — a line you overheard, a link, a photo of a book page, a v
 | A URL | Scrapes (Readability, Zyte fallback for JS-heavy, HN firebase for `news.ycombinator.com`, Exa for X/Reddit) → extracts → **asks you "why?"** | `kind=url`, with why as a child |
 | A voice note | Transcribes via Whisper → processes as text | `kind=voice`, transcript in `payload.transcript` |
 | A photo | Vision OCR + description via Claude/GPT-4o | `kind=image`, in `payload.vision` |
+| A **PDF** | Extracts text via `pypdf`, classifies by token estimate (tiny / medium / large), processes normally. Scanned / image-only PDFs are rejected with a nudge to send a photo. Rejects >50 pages or >20k tokens | `kind=pdf`, text in `raw`, `payload.{page_count, token_estimate, tier, filename}` |
 | A forwarded message | Preserves the forward metadata | `payload.forward_origin` |
 
 ### Commands
