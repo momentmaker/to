@@ -441,32 +441,31 @@ async def test_reflect_handler_tells_user_when_nothing_to_reflect_on(conn):
 
 # ---- scheduler structure --------------------------------------------------
 
-def test_build_scheduler_registers_daily_prompt_when_bot_provided(conn):
+def test_build_scheduler_skips_weekly_digest_by_default(conn):
+    """WEEKLY_DIGEST_ENABLED defaults to False — the weekend cron is opt-in
+    to match "expensive operations require explicit enablement." Daily
+    prompt + housekeeping jobs are unaffected.
+    """
     providers = Providers(_SpyProv(""), None)
     bot = MagicMock()
     scheduler = sched_mod.build_scheduler(
         conn=conn, settings=_settings(), providers=providers, bot=bot,
     )
     ids = {j.id for j in scheduler.get_jobs()}
-    assert ids == {"process_pending", "nightly_sync", "daily_prompt", "weekly_digest"}
+    assert "weekly_digest" not in ids
+    assert ids == {"process_pending", "nightly_sync", "daily_prompt"}
 
 
-def test_build_scheduler_skips_weekly_digest_when_disabled(conn):
-    """With WEEKLY_DIGEST_ENABLED=false the cron is not registered.
-    Daily prompt + housekeeping jobs are unaffected.
-    """
+def test_build_scheduler_registers_weekly_digest_when_explicitly_enabled(conn):
     providers = Providers(_SpyProv(""), None)
     bot = MagicMock()
     scheduler = sched_mod.build_scheduler(
         conn=conn,
-        settings=_settings(WEEKLY_DIGEST_ENABLED=False),
+        settings=_settings(WEEKLY_DIGEST_ENABLED=True),
         providers=providers, bot=bot,
     )
     ids = {j.id for j in scheduler.get_jobs()}
-    assert "weekly_digest" not in ids
-    assert "daily_prompt" in ids  # other scheduled jobs still present
-    assert "process_pending" in ids
-    assert "nightly_sync" in ids
+    assert ids == {"process_pending", "nightly_sync", "daily_prompt", "weekly_digest"}
 
 
 def test_build_scheduler_skips_daily_prompt_without_bot(conn):

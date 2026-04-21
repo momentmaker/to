@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     EXA_API_KEY: str = ""
 
     DAILY_PROMPT_LOCAL_TIME: str = "21:30"
-    WEEKLY_DIGEST_ENABLED: bool = True
+    WEEKLY_DIGEST_ENABLED: bool = False
     WEEKLY_DIGEST_DOW: str = "sat"
     WEEKLY_DIGEST_LOCAL_TIME: str = "22:00"
     WHY_WINDOW_MINUTES: int = 10

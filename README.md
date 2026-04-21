@@ -157,19 +157,21 @@ If you only have one key, set all seven to the same provider — the router will
 
 ---
 
-## Running the weekly digest yourself (no auto-cron)
+## Running the weekly digest yourself (default)
 
-The weekly digest is the single most expensive thing the bot does — one Opus-class LLM call per week, ~$0.30–$1 per run depending on how much you captured. If you'd rather run it yourself against the captures GitHub repo (using Claude Code, Cursor, or any other local agent you trust), set:
+The weekly digest is the single most expensive thing the bot does — one Opus-class LLM call per week, ~$0.30–$1 per run depending on how much you captured. **The Saturday-night cron is opt-in**; by default the bot stays quiet on the weekend and you run the digest yourself against the captures GitHub repo.
+
+To let the bot fire the cron automatically every Saturday, set:
 
 ```
-WEEKLY_DIGEST_ENABLED=false
+WEEKLY_DIGEST_ENABLED=true
 ```
 
-This **only** disables the Saturday-night cron. Everything else still works:
+Either way, you still have:
 
-- `/export` in Telegram still forces a server-side digest on demand.
-- Captures still push to the GitHub repo continuously.
-- Daily prompts + `/ask` (Oracle) still run.
+- `/export` in Telegram forces a server-side digest on demand.
+- Captures push to the GitHub repo continuously.
+- Daily prompts + `/ask` (Oracle) run as configured.
 
 ### Suggested local workflow with Claude Code
 
