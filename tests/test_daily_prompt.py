@@ -448,7 +448,7 @@ def test_build_scheduler_registers_daily_prompt_when_bot_provided(conn):
         conn=conn, settings=_settings(), providers=providers, bot=bot,
     )
     ids = {j.id for j in scheduler.get_jobs()}
-    assert ids == {"process_pending", "nightly_sync", "daily_prompt"}
+    assert ids == {"process_pending", "nightly_sync", "daily_prompt", "weekly_digest"}
 
 
 def test_build_scheduler_skips_daily_prompt_without_bot(conn):
@@ -518,23 +518,15 @@ async def test_drain_on_boot_skips_daily_prompt_before_scheduled_time(conn):
     providers = Providers(_SpyProv("q?"), None)
     bot = MagicMock(); bot.send_message = AsyncMock()
 
-    with patch("bot.scheduler.process_pending", AsyncMock(return_value=0)), \
+    # Force the time-gate to return False regardless of when tests run.
+    with patch("bot.scheduler._is_past_daily_time_today", return_value=False), \
+         patch("bot.scheduler.process_pending", AsyncMock(return_value=0)), \
          patch("bot.scheduler.nightly_sync", AsyncMock(return_value=0)), \
          patch("bot.scheduler.daily_prompt_job", AsyncMock(return_value=True)) as dp:
         await sched_mod.drain_on_boot(
-            conn=conn,
-            settings=_settings(DAILY_PROMPT_LOCAL_TIME="23:59"),
-            providers=providers, bot=bot,
+            conn=conn, settings=_settings(), providers=providers, bot=bot,
         )
-    # The scheduled time (23:59) is almost certainly in the future when tests
-    # run (unless they literally run during the last minute of the day — in
-    # which case this test is harmlessly flaky). Test at a time when 23:59
-    # hasn't happened yet.
-    from datetime import datetime as _dt
-    from zoneinfo import ZoneInfo as _ZI
-    now_hour = _dt.now(_ZI("UTC")).hour
-    if now_hour < 23:
-        dp.assert_not_awaited()
+    dp.assert_not_awaited()
 
 
 def test_is_past_daily_time_today_handles_malformed_time():

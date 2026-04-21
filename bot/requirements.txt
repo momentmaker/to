@@ -12,3 +12,5 @@ lxml>=5.0.0
 lxml_html_clean>=0.2.0
 apscheduler>=3.10.0
 tomli_w>=1.0.0
+grapheme>=0.6.0
+tweepy>=4.14.0

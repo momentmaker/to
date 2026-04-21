@@ -66,13 +66,10 @@ async def ocr_and_describe(
     max_tokens: int = 1024,
 ) -> dict:
     """Run vision on the image; returns {"ocr": str, "description": str}."""
+    from bot.llm.router import model_for_purpose
     provider = providers.pick(settings.LLM_PROVIDER_VISION, purpose="vision")
     image_b64 = base64.b64encode(image_bytes).decode("ascii")
-
-    if provider.name == "anthropic":
-        model = settings.CLAUDE_MODEL_INGEST
-    else:
-        model = settings.OPENAI_MODEL_INGEST
+    model = await model_for_purpose(settings, "vision", provider.name, conn)
 
     response = await provider.vision(
         model=model,

@@ -18,6 +18,25 @@ Purpose = Literal["ingest", "daily", "why", "digest", "oracle", "tweet", "vision
 Role = Literal["user", "assistant"]
 
 
+# Per-purpose request timeouts in seconds. Interactive calls stay well under
+# Telegram's ~75s webhook timeout; digest has more headroom since it runs
+# from the scheduler as a background task.
+_TIMEOUTS: dict[str, float] = {
+    "digest": 180.0,
+    "oracle":  60.0,
+    "why":     45.0,
+    "daily":   60.0,
+    "tweet":   45.0,
+    "ingest":  90.0,
+    "vision":  60.0,
+}
+
+
+def timeout_for(purpose: str) -> float:
+    """Default timeout to pass to SDK clients for this purpose."""
+    return _TIMEOUTS.get(purpose, 60.0)
+
+
 @dataclass
 class LlmResponse:
     text: str

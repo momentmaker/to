@@ -88,14 +88,25 @@ async def clear_pending(conn: aiosqlite.Connection) -> None:
 
 
 async def consume_if_live(conn: aiosqlite.Connection) -> str | None:
-    """Return local_date if a live pending-reflection exists, else None.
-    Always clears the state whether or not it was live (expired clears too).
+    """Atomically consume the pending-reflection row.
+
+    Uses `DELETE ... RETURNING` so concurrent handler tasks can't both claim
+    the same pending state — only one task gets the row, others see None.
+    Returns local_date if live, None if the row was absent, expired, or corrupt.
     """
-    pending = await get_pending(conn)
-    if pending is None:
+    async with conn.execute(
+        "DELETE FROM kv WHERE key = ? RETURNING value", (_KV_KEY,),
+    ) as cur:
+        row = await cur.fetchone()
+    await conn.commit()
+    if row is None:
         return None
-    if pending.deadline <= _utcnow():
-        await clear_pending(conn)
+    try:
+        data = json.loads(row[0])
+        deadline = datetime.fromisoformat(data["deadline"].replace("Z", "+00:00"))
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
+        log.warning("corrupt pending_reflection row consumed, dropping: %s", e)
         return None
-    await clear_pending(conn)
-    return pending.local_date
+    if deadline <= _utcnow():
+        return None
+    return str(data["local_date"])

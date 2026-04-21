@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from bot.llm.base import LlmResponse, Message, Purpose
+from bot.llm.base import LlmResponse, Message, Purpose, timeout_for
 
 
 class OpenAIProvider:
@@ -35,6 +35,7 @@ class OpenAIProvider:
             model=model,
             max_tokens=max_tokens,
             messages=oai_messages,
+            timeout=timeout_for(purpose),
         )
 
         text = resp.choices[0].message.content or ""
@@ -80,6 +81,7 @@ class OpenAIProvider:
                     {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}},
                 ],
             }],
+            timeout=timeout_for("vision"),
         )
         text = resp.choices[0].message.content or ""
         usage = resp.usage

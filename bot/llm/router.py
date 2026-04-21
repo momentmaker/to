@@ -89,14 +89,29 @@ def build_providers(settings: Settings, *, anthropic_client=None, openai_client=
     return Providers(anth, oai)
 
 
-def _model_for(settings: Settings, purpose: Purpose, provider_name: str) -> str:
+async def model_for_purpose(
+    settings: Settings, purpose: Purpose, provider_name: str,
+    conn: aiosqlite.Connection,
+) -> str:
+    """Pick the model name for this call, applying budget-driven degrade.
+
+    Rules:
+    - Digest always uses the heavy model (weekly headline feature, never degrade).
+    - Every other purpose checks `should_degrade`: above the soft cap, fall
+      back to the `*_CHEAP` model for that provider.
+    """
+    degrade = await budget.should_degrade(conn, settings=settings, purpose=purpose)
     if provider_name == "anthropic":
         if purpose == "digest":
             return settings.CLAUDE_MODEL_DIGEST
+        if degrade:
+            return settings.CLAUDE_MODEL_CHEAP
         return settings.CLAUDE_MODEL_INGEST
     # openai
     if purpose == "digest":
         return settings.OPENAI_MODEL_DIGEST
+    if degrade:
+        return settings.OPENAI_MODEL_CHEAP
     return settings.OPENAI_MODEL_INGEST
 
 
@@ -112,7 +127,7 @@ async def call_llm(
 ) -> LlmResponse:
     requested = getattr(settings, _PROVIDER_ATTR[purpose])
     provider = providers.pick(requested, purpose=purpose)
-    model = _model_for(settings, purpose, provider.name)
+    model = await model_for_purpose(settings, purpose, provider.name, conn)
     resp = await provider.chat(
         model=model,
         purpose=purpose,
@@ -121,4 +136,9 @@ async def call_llm(
         max_tokens=max_tokens,
     )
     await budget.record_usage(conn, purpose=purpose, response=resp)
+    # Fire-and-forget warn check. Never block the caller for alert I/O.
+    try:
+        await budget.check_and_warn_cap(conn, settings=settings)
+    except Exception:
+        log.exception("call_llm: budget warn check failed")
     return resp

@@ -10,11 +10,15 @@ from typing import Any
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from bot import db, github_sync, process, reflection, scheduler as sched_mod, why
+from bot import db, github_sync, oracle, process, reflection, scheduler as sched_mod, tweet as tweet_mod, why
 from bot.config import Settings
+from bot.digest import fz_state as fz_state_mod
+from bot.digest import validate as digest_validate
+from bot.digest import weekly as digest_weekly
 from bot.ingest import vision as vision_mod
 from bot.ingest import voice as voice_mod
 from bot.ingest.router import classify_text, scrape_url
+from bot.llm import budget as llm_budget
 from bot.llm.router import Providers
 from bot.persona import ACK_TEXT, GREETING, HELP_TEXT
 from bot.week import fz_week_idx, iso_week_key, local_date_for
@@ -62,11 +66,37 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     w_idx = fz_week_idx(today_local, dob)
     w_key = iso_week_key(today_local)
 
-    text = (
-        f"corpus: {total}\n"
-        f"this week ({w_key}, fz-week {w_idx}): {this_week}"
+    mtd_total = await llm_budget.month_to_date_usd(conn)
+    mtd_by = await llm_budget.month_to_date_by_provider(conn)
+    cap = float(settings.LLM_MONTHLY_USD_CAP)
+    cache_ratio = await llm_budget.cache_hit_ratio(conn)
+
+    degrade_note = ""
+    if cap > 0 and mtd_total >= cap:
+        degrade_note = " (above cap; non-digest degraded to *_CHEAP)"
+
+    cost_lines = [f"llm month-to-date: ${mtd_total:.2f} / ${cap:.2f}{degrade_note}"]
+    for name in ("anthropic", "openai"):
+        val = mtd_by.get(name, 0.0)
+        if val > 0:
+            cost_lines.append(f"  {name}: ${val:.2f}")
+    cache_line = f"cache hit: {cache_ratio * 100:.0f}%" if cache_ratio else "cache hit: 0%"
+
+    tweet_line = (
+        f"tweets: daily={'on' if settings.X_DAILY_ENABLED else 'off'} "
+        f"weekly={'on' if settings.X_WEEKLY_ENABLED else 'off'}"
     )
-    await update.message.reply_text(text)
+
+    lines = [
+        f"corpus: {total}",
+        f"this week ({w_key}, fz-week {w_idx}): {this_week}",
+        "",
+        *cost_lines,
+        cache_line,
+        "",
+        tweet_line,
+    ]
+    await update.message.reply_text("\n".join(lines))
 
 
 def _forward_origin_payload(message) -> dict | None:
@@ -160,6 +190,10 @@ async def _consume_pending_if_any(
             telegram_msg_id=message.message_id,
             dob=dob,
             tz_name=settings.TIMEZONE,
+            # Whys render inline into their parent's file — no separate LLM
+            # ingest needed, so mark processed at insert to keep the
+            # process_pending sweeper from repeatedly re-running the LLM on them.
+            status="processed",
         )
         if capture_id is None:
             return True
@@ -197,9 +231,56 @@ async def _consume_pending_if_any(
                     settings=settings, providers=providers, db_conn=conn,
                 )
             )
+        # Optional daily tweet — only if user opted in + OAuth configured.
+        if providers is not None and tweet_mod.is_configured_for_daily(settings):
+            asyncio.create_task(
+                _post_daily_tweet(
+                    local_date=pending_local_date, reflection_text=text,
+                    settings=settings, providers=providers, db_conn=conn,
+                )
+            )
         return True
 
     return False
+
+
+async def _post_daily_tweet(
+    *, local_date: str, reflection_text: str,
+    settings: Settings, providers: Providers, db_conn,
+) -> None:
+    """Generate + post the day's tweet, then persist text + sent time on `daily`.
+    All errors are swallowed (logged only) — tweets are a bonus, not critical.
+    """
+    try:
+        # Pull today's fragments for context
+        async with db_conn.execute(
+            "SELECT raw, processed FROM captures "
+            "WHERE local_date = ? AND kind IN ('text', 'url', 'image', 'voice') "
+            "ORDER BY id",
+            (local_date,),
+        ) as cur:
+            rows = list(await cur.fetchall())
+        fragments_text = "\n".join(
+            f"- {(r['raw'] or '')[:300]}" for r in rows if r['raw']
+        )
+        tweet_text = await tweet_mod.generate_daily_tweet(
+            fragments_text=fragments_text or "(no fragments)",
+            reflection=reflection_text,
+            settings=settings, providers=providers, conn=db_conn,
+        )
+        if not tweet_text:
+            return
+        result = await tweet_mod.post_tweet(tweet_text, settings=settings)
+        if result is None:
+            return
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        await db_conn.execute(
+            "UPDATE daily SET tweet_text = ?, tweet_posted_at = ? WHERE local_date = ?",
+            (tweet_text, now_iso, local_date),
+        )
+        await db_conn.commit()
+    except Exception:
+        log.exception("daily tweet post failed")
 
 
 async def _ask_and_set_pending_why(
@@ -322,6 +403,133 @@ async def skip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await why.clear_pending(conn)
     await reflection.clear_pending(conn)
     await update.message.reply_text("skipped.")
+
+
+async def setvow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/setvow <text> — store the user's vow for fz.ax's dashboard."""
+    if not await _ensure_owner(update, context):
+        return
+    conn = context.bot_data["db"]
+    text = " ".join(context.args) if context.args else ""
+    if not text.strip():
+        await update.message.reply_text(
+            "usage: /setvow <the line you want pinned above the year>",
+        )
+        return
+    await fz_state_mod.set_vow(conn, text)
+    await update.message.reply_text("vow set.")
+
+
+async def setmark_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/setmark <single-grapheme> — override the current week's mark.
+
+    The mark is stored now but essay/whisper generation still happens at the
+    scheduled weekly digest time. Status is left 'pending' on new rows so the
+    scheduler doesn't skip the week on idempotency.
+    """
+    if not await _ensure_owner(update, context):
+        return
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+    raw = " ".join(context.args) if context.args else ""
+    mark = raw.strip()
+    if not digest_validate.is_single_grapheme(mark):
+        await update.message.reply_text(
+            "mark must be exactly one character or emoji.",
+        )
+        return
+
+    dob = db.settings_dob(settings.DOB)
+    today_local = local_date_for(datetime.now(timezone.utc), settings.TIMEZONE)
+    w_idx = fz_week_idx(today_local, dob)
+    w_key = iso_week_key(today_local)
+    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    await conn.execute(
+        """
+        INSERT INTO weekly (fz_week_idx, iso_week_key, mark, marked_at, status)
+        VALUES (?, ?, ?, ?, 'pending')
+        ON CONFLICT(fz_week_idx) DO UPDATE SET
+          mark = excluded.mark, marked_at = excluded.marked_at
+        """,
+        (w_idx, w_key, mark, now_iso),
+    )
+    await conn.commit()
+    await update.message.reply_text(f"{mark}  set for {w_key}.")
+
+
+async def _run_export_in_background(
+    *, conn, settings: Settings, providers: Providers, bot, chat_id: int,
+) -> None:
+    try:
+        ok = await digest_weekly.weekly_digest_job(
+            conn=conn, settings=settings, providers=providers, bot=bot,
+            force=True,
+        )
+    except Exception:
+        log.exception("export background task crashed")
+        ok = False
+    if not ok:
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text="digest could not be generated (no captures, or validation failed).",
+            )
+        except Exception:
+            log.exception("failed to notify owner of export failure")
+
+
+async def export_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/export — force the weekly digest to run now (doesn't wait for Saturday).
+
+    The digest is a ~30s LLM call plus GitHub I/O. Running inline would block
+    the webhook for the whole duration, risking Telegram's ~75s timeout and
+    a retried /export that fires a second digest. We ack fast and run in a
+    background task; results (or failure) are DM'd separately.
+    """
+    if not await _ensure_owner(update, context):
+        return
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+    providers: Providers | None = context.bot_data.get("providers")
+    if providers is None:
+        await update.message.reply_text("no LLM configured; cannot export.")
+        return
+
+    await update.message.reply_text("running weekly digest...")
+    asyncio.create_task(
+        _run_export_in_background(
+            conn=conn, settings=settings, providers=providers,
+            bot=context.bot, chat_id=update.message.chat.id,
+        )
+    )
+
+
+async def ask_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/ask <question> — consult the commonplace. Supports `since:YYYY-MM-DD`
+    and `limit:N` modifiers anywhere in the question.
+    """
+    if not await _ensure_owner(update, context):
+        return
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+    providers: Providers | None = context.bot_data.get("providers")
+    if providers is None:
+        await update.message.reply_text("no LLM configured; cannot ask.")
+        return
+
+    raw = " ".join(context.args) if context.args else ""
+    if not raw.strip():
+        await update.message.reply_text(
+            "usage: /ask <question>   modifiers: since:YYYY-MM-DD  limit:N",
+        )
+        return
+
+    answer, _fragments = await oracle.ask(
+        question_raw=raw,
+        settings=settings, providers=providers, conn=conn,
+    )
+    await update.message.reply_text(answer)
 
 
 async def reflect_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):

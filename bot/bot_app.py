@@ -5,10 +5,14 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from bot import db
 from bot.config import Settings
 from bot.handlers import (
+    ask_handler,
     error_handler,
+    export_handler,
     help_handler,
     photo_message_handler,
     reflect_handler,
+    setmark_handler,
+    setvow_handler,
     skip_handler,
     start_handler,
     status_handler,
@@ -77,6 +81,10 @@ async def create_bot_app(settings: Settings):
     app.add_handler(CommandHandler("status", status_handler))
     app.add_handler(CommandHandler("skip", skip_handler))
     app.add_handler(CommandHandler("reflect", reflect_handler))
+    app.add_handler(CommandHandler("setvow", setvow_handler))
+    app.add_handler(CommandHandler("setmark", setmark_handler))
+    app.add_handler(CommandHandler("export", export_handler))
+    app.add_handler(CommandHandler("ask", ask_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_message_handler))
     app.add_handler(MessageHandler(filters.PHOTO, photo_message_handler))

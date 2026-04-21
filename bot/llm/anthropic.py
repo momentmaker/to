@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from bot.llm.base import LlmResponse, Message, Purpose
+from bot.llm.base import LlmResponse, Message, Purpose, timeout_for
 
 
 class AnthropicProvider:
@@ -37,6 +37,7 @@ class AnthropicProvider:
             max_tokens=max_tokens,
             system=system if system else [],
             messages=anth_messages,
+            timeout=timeout_for(purpose),
         )
         # Extract plain text from the first text block
         text_parts: list[str] = []
@@ -76,6 +77,7 @@ class AnthropicProvider:
                     {"type": "text", "text": prompt},
                 ],
             }],
+            timeout=timeout_for("vision"),
         )
         text_parts: list[str] = []
         for block in resp.content:

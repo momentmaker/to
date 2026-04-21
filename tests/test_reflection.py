@@ -60,3 +60,19 @@ async def test_corrupt_row_self_heals(conn):
     async with conn.execute("SELECT COUNT(*) FROM kv WHERE key = 'pending_reflection'") as cur:
         row = await cur.fetchone()
     assert row[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_consume_if_live_is_atomic_under_concurrent_tasks(conn):
+    """Regression: previously `consume_if_live` did SELECT then DELETE in two
+    awaits, so two concurrent tasks could both see the same live row and both
+    claim its local_date. With DELETE RETURNING only one task wins.
+    """
+    import asyncio
+    await reflection.set_pending(conn, local_date="2026-04-21", tz_name="UTC")
+
+    a, b = await asyncio.gather(
+        reflection.consume_if_live(conn),
+        reflection.consume_if_live(conn),
+    )
+    assert {a, b} == {"2026-04-21", None}

@@ -67,6 +67,23 @@ async def test_clear_pending_is_idempotent(conn):
     await why.clear_pending(conn)
 
 
+@pytest.mark.asyncio
+async def test_consume_if_live_is_atomic_under_concurrent_tasks(conn):
+    """Regression: previously `consume_if_live` did SELECT then DELETE in two
+    awaits, so two concurrent tasks could both see the same live row and both
+    return its parent_id. With DELETE RETURNING only one task wins.
+    """
+    await why.set_pending(conn, parent_id=99, window_minutes=10)
+
+    # Run two consumers concurrently against the same connection.
+    a, b = await asyncio.gather(
+        why.consume_if_live(conn),
+        why.consume_if_live(conn),
+    )
+    # Exactly one winner, one None.
+    assert {a, b} == {99, None}
+
+
 # ---- ask_why_question -----------------------------------------------------
 
 class _FakeProv:
@@ -159,12 +176,15 @@ async def test_plain_text_reply_within_window_is_stored_as_why(conn):
     await text_message_handler(update, context)
 
     async with conn.execute(
-        "SELECT kind, parent_id, raw FROM captures WHERE telegram_msg_id = ?", (555,)
+        "SELECT kind, parent_id, raw, status FROM captures WHERE telegram_msg_id = ?", (555,)
     ) as cur:
         row = await cur.fetchone()
     assert row["kind"] == "why"
     assert row["parent_id"] == parent_id
     assert row["raw"] == "because the title caught me"
+    # Whys don't need LLM ingest — they render inline in the parent. Insert
+    # with status='processed' so the process_pending sweeper skips them.
+    assert row["status"] == "processed"
     # Pending cleared
     assert await why.get_pending(conn) is None
 
