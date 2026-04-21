@@ -8,6 +8,7 @@ from bot.handlers import (
     ask_handler,
     error_handler,
     export_handler,
+    forget_handler,
     help_handler,
     photo_message_handler,
     reflect_handler,
@@ -85,6 +86,7 @@ async def create_bot_app(settings: Settings):
     app.add_handler(CommandHandler("setmark", setmark_handler))
     app.add_handler(CommandHandler("export", export_handler))
     app.add_handler(CommandHandler("ask", ask_handler))
+    app.add_handler(CommandHandler("forget", forget_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_message_handler))
     app.add_handler(MessageHandler(filters.PHOTO, photo_message_handler))

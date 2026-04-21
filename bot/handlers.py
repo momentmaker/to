@@ -10,7 +10,7 @@ from typing import Any
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from bot import db, github_sync, oracle, process, reflection, scheduler as sched_mod, tweet as tweet_mod, why
+from bot import db, forget, github_sync, oracle, process, reflection, scheduler as sched_mod, tweet as tweet_mod, why
 from bot.config import Settings
 from bot.digest import fz_state as fz_state_mod
 from bot.digest import validate as digest_validate
@@ -510,6 +510,56 @@ async def export_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bot=context.bot, chat_id=update.message.chat.id,
         )
     )
+
+
+async def forget_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/forget <id>  or  /forget last  — irrevocably remove a capture.
+
+    Cascades: deleting a non-why capture also drops its why children and
+    clears any daily.reflection_capture_id pointer. Deleting a why
+    re-renders the parent's GitHub file without it.
+    """
+    if not await _ensure_owner(update, context):
+        return
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+
+    args = context.args or []
+    if not args:
+        await update.message.reply_text(
+            "usage: /forget <capture_id>   or   /forget last",
+        )
+        return
+
+    arg = args[0].strip().lower()
+    if arg == "last":
+        capture_id = await forget.find_most_recent_id(conn)
+        if capture_id is None:
+            await update.message.reply_text("nothing to forget.")
+            return
+    else:
+        try:
+            capture_id = int(arg)
+        except ValueError:
+            await update.message.reply_text(
+                "usage: /forget <capture_id>   or   /forget last",
+            )
+            return
+
+    result = await forget.forget_capture(conn, capture_id, settings=settings)
+    if result is None:
+        await update.message.reply_text(f"capture {capture_id} not found.")
+        return
+
+    bits = [f"forgotten: capture {result['id']} ({result['kind']})"]
+    if result["cascaded_whys"]:
+        bits.append(
+            f"  also dropped {len(result['cascaded_whys'])} why "
+            f"{'child' if len(result['cascaded_whys']) == 1 else 'children'}"
+        )
+    if not result["github_deleted"] and github_sync.is_configured(settings):
+        bits.append("  (github side not updated — check logs)")
+    await update.message.reply_text("\n".join(bits))
 
 
 async def ask_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):

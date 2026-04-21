@@ -45,6 +45,54 @@ def _headers(settings: Settings) -> dict[str, str]:
     }
 
 
+async def delete_file(
+    *,
+    settings: Settings,
+    path: str,
+    sha: str,
+    message: str,
+    client: httpx.AsyncClient | None = None,
+) -> bool:
+    """DELETE file contents on GitHub. Returns True on success.
+
+    Retries on 5xx/timeout. Does NOT retry on 4xx — 404 (already gone) and
+    409/422 (sha conflict from a local edit) need operator attention, not
+    blind retry.
+    """
+    owner_repo = settings.GITHUB_REPO
+    url = f"{_API_BASE}/repos/{owner_repo}/contents/{path}"
+    body: dict[str, Any] = {
+        "message": message,
+        "sha": sha,
+        "branch": settings.GITHUB_BRANCH,
+    }
+
+    owned = client is None
+    if owned:
+        client = httpx.AsyncClient(timeout=_TIMEOUT)
+    try:
+        for attempt in range(_MAX_RETRIES):
+            try:
+                resp = await client.request(
+                    "DELETE", url, headers=_headers(settings), json=body,
+                )
+            except httpx.TimeoutException:
+                await asyncio.sleep(_BACKOFF_BASE_S * (2 ** attempt))
+                continue
+            if 500 <= resp.status_code < 600:
+                await asyncio.sleep(_BACKOFF_BASE_S * (2 ** attempt))
+                continue
+            if resp.status_code == 404:
+                # Already gone on GitHub — nothing to do, success.
+                return True
+            resp.raise_for_status()
+            return True
+        return False
+    finally:
+        if owned:
+            await client.aclose()
+
+
 async def put_file(
     *,
     settings: Settings,
