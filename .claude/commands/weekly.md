@@ -183,7 +183,44 @@ git push
 
 If the push fails (remote has diverged), pull-rebase and try once more. If it still fails, stop and tell the user.
 
-## Step 9 — Finish
+## Step 9 — Optional: compose a tweet and copy it to the clipboard
+
+Ask the user: *"want a tweet ready to paste on X? [y/N]"*. Default is no — skip to Step 10.
+
+If yes, draft ONE tweet following these rules (same constraints as the bot's `SYSTEM_TWEET_WEEKLY` in `bot/prompts.py`, but since we're in-conversation, emit the text directly — no JSON envelope):
+
+- **Maximum 260 characters** — count graphemes, not code units. Emoji sequences (ZWJ families, flags) count as one each.
+- In the user's voice, NOT orchurator's.
+- Anchor on the whisper if it fits; otherwise quote the strongest line from the essay. You may combine with the mark as a leading glyph.
+- Engaging without performing. No hashtags unless they appeared in the user's fragments. No `@` mentions. No emojis unless the user used them.
+- No preamble, no sign-off, no quotes wrapping the whole tweet.
+
+Validate the length programmatically (grapheme-accurate) and copy to the clipboard. From the `to` repo:
+
+```bash
+python3 - <<'PY'
+import subprocess, sys, shutil
+sys.path.insert(0, '<absolute-path-to-to-repo>')
+from bot.tweet import truncate_tweet
+
+tweet = """<your tweet here>"""
+trimmed = truncate_tweet(tweet)  # grapheme-aware, no ellipsis
+
+# Prefer pbcopy (macOS), fall back to xclip, wl-copy, or print.
+for cmd in (["pbcopy"], ["xclip", "-selection", "clipboard"], ["wl-copy"]):
+    if shutil.which(cmd[0]):
+        subprocess.run(cmd, input=trimmed, text=True, check=True)
+        print(f"copied ({len(trimmed)} chars / grapheme-safe) via {cmd[0]}")
+        break
+else:
+    print("no clipboard tool found; paste manually:")
+    print(trimmed)
+PY
+```
+
+Show the tweet to the user in the chat too — they should see what's on their clipboard before they paste.
+
+## Step 10 — Finish
 
 Tell the user plainly:
 
@@ -192,7 +229,10 @@ done. 2026-w17 wrote:
   <captures-repo>/2026-w17/digest.md
   <captures-repo>/fz-ax-backup.json
 
-open fz.ax to see the week. /tweetweekly on Telegram to post.
+open fz.ax to see the week.
+to post:
+  • /tweetweekly on Telegram (auto)
+  • or paste — the tweet is on your clipboard (if you said yes in Step 9)
 ```
 
 ## Rules
