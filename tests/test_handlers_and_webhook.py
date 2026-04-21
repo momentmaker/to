@@ -192,6 +192,10 @@ async def test_status_handler_reports_corpus_and_week_counts(conn):
     body = update.message.reply_text.await_args.args[0]
     assert body.startswith("corpus: 2\n")
     assert "this week" in body
+    # Foundational config visible for quick verification
+    assert "dob: 1990-01-01" in body
+    assert "tz: UTC" in body
+    assert "digest cron:" in body
 
 
 @pytest.mark.asyncio

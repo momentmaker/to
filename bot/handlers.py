@@ -86,6 +86,11 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"tweets: daily={'on' if settings.X_DAILY_ENABLED else 'off'} "
         f"weekly={'on' if settings.X_WEEKLY_ENABLED else 'off'}"
     )
+    digest_line = (
+        f"digest cron: {'on' if settings.WEEKLY_DIGEST_ENABLED else 'off'} "
+        f"({settings.WEEKLY_DIGEST_DOW} {settings.WEEKLY_DIGEST_LOCAL_TIME})"
+    )
+    config_line = f"dob: {settings.DOB}  |  tz: {settings.TIMEZONE}"
 
     lines = [
         f"corpus: {total}",
@@ -95,6 +100,8 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cache_line,
         "",
         tweet_line,
+        digest_line,
+        config_line,
     ]
     await update.message.reply_text("\n".join(lines))
 
