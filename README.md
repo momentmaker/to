@@ -250,21 +250,18 @@ See `scripts/weekly_digest.py --help` for all options.
 
 Future sessions will just know — no re-explaining the layout.
 
-#### Path B — paste a prompt into Claude Code
+#### Path B — `/weekly` slash command (Claude Code)
 
-If you'd rather review + edit iteratively, skip the CLI and paste this into Claude Code from your captures repo:
+If you're a Claude Code user and don't want to burn API credit, this repo ships a `.claude/commands/weekly.md` slash command. Run Claude Code from this (`to`) repo, then:
 
-> Read every `.md` file under `YYYY-wNN/` (replace with the week you want). Each file has TOML frontmatter + a body with the user's captures (quotes, summaries, raw text) plus any inline "why?" replies.
->
-> Write an anthology essay composed **entirely of the user's own words**, following strict quote-only rules: every sentence of the essay must be a verbatim or minimally-edited substring of one of the fragments (case-insensitive, punctuation-normalized). Do not invent connective prose. Line breaks are your only authorial move.
->
-> Also produce:
-> - A single-sentence "whisper" ≤240 characters, in the user's voice.
-> - A single Unicode grapheme "mark" that captures the week's aesthetic.
->
-> Write the result to `YYYY-wNN/digest.md` with frontmatter `+++\nweek = "YYYY-WNN"\nmark = "…"\nwhisper = "…"\n+++` then the essay.
->
-> Then update `fz-ax-backup.json` at the repo root: add or replace the entry for this week's fz-ax `weeks` map with `{mark, whisper, markedAt}` (markedAt = now in ISO UTC), and add the index to `anchors` (sorted, deduped). Bump `exportedAt`.
+```
+/weekly              # latest week without a digest
+/weekly 2026-w17     # a specific week
+```
+
+Claude Code itself drafts the essay/whisper/mark in-conversation (no Anthropic API key needed), runs the same `bot/digest/validate.py` quote-only validator the bot uses, writes `digest.md` + updates `fz-ax-backup.json`, and commits + pushes to your captures repo.
+
+The command is **agnostic to your setup** — it checks memory for your captures repo path on first run, asks if missing, and remembers it. Works identically whether your private repo is `yourname/self`, `yourname/commonplace`, or anything else.
 
 ### On-demand (for any mode)
 
