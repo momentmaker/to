@@ -594,7 +594,6 @@ async def tweetweekly_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
-    dob = db.settings_dob(settings.DOB)
     today = local_date_for(datetime.now(timezone.utc), settings.TIMEZONE)
     current_iso_week = iso_week_key(today)
 
@@ -665,6 +664,7 @@ async def tweetweekly_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     # right fz_week_idx, which we can't safely derive from iso_week alone.
     if iso_week == current_iso_week:
         try:
+            dob = db.settings_dob(settings.DOB)
             fz_week = fz_week_idx(today, dob)
             now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
             await conn.execute(

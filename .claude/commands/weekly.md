@@ -28,7 +28,7 @@ If the pull fails (merge conflict, divergent history), stop and ask the user.
 
 ## Step 2 — Pick the target week
 
-- If the user passed `$ARGUMENTS` (e.g. `2026-w17`), use that.
+- If the user passed `$ARGUMENTS` (e.g. `2026-w17`), validate it matches `^\d{4}-w\d{2}$` and the directory `<captures-repo>/<week>/` exists. If it doesn't exist, stop and tell the user which weeks DO exist.
 - Otherwise, list `YYYY-wNN/` dirs and pick the most recent one that does NOT already contain a `digest.md`. If the most recent week already has a digest, ask the user whether to regenerate it or pick a different week.
 
 ## Step 3 — Load the week's captures
@@ -151,24 +151,36 @@ This is a cumulative file. Read-modify-write:
   5. Update `state.exportedAt` to the same `now` string.
   6. Write back with `json.dumps(..., indent=2, sort_keys=True, ensure_ascii=False)` + trailing newline.
 
-The easiest way is to delegate to the existing helper:
+The easiest way is to delegate to the existing helper. Example (substitute the bracketed values):
 
 ```bash
 python3 - <<'PY'
-import sys
-sys.path.insert(0, '<absolute-path-to-to-repo>')
+import json, sys
+from datetime import date, datetime, timezone
 from pathlib import Path
+sys.path.insert(0, '<absolute-path-to-to-repo>')
 from scripts.weekly_digest import update_fz_backup
 
-# Compute fz_week_idx from DOB + a date in the target week.
-# Read state.dob from the existing fz-ax-backup.json if present.
-...
+backup = Path('<captures-repo>/fz-ax-backup.json')
+if not backup.exists():
+    print("no fz-ax-backup.json — pass dob + week_start on first run")
+    sys.exit(1)
+
+state = json.loads(backup.read_text(encoding="utf-8"))
+dob = date.fromisoformat(state["state"]["dob"])
+# Derive any day in the target ISO week: parse "YYYY-WNN" → (year, week).
+iso_year, iso_week = <iso_year>, <iso_week>  # e.g. 2026, 17
+monday = date.fromisocalendar(iso_year, iso_week, 1)
+fz_week_idx = (monday - dob).days // 7
+now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
 update_fz_backup(
-    Path('<captures-repo>/fz-ax-backup.json'),
-    fz_week_idx=<int>,
-    mark=<mark>, whisper=<whisper>,
-    marked_at=<now ISO>,
+    backup,
+    fz_week_idx=fz_week_idx,
+    mark="<mark>", whisper="<whisper>",
+    marked_at=now_iso,
 )
+print(f"updated fz-ax-backup.json for week {fz_week_idx}")
 PY
 ```
 
@@ -202,18 +214,29 @@ python3 - <<'PY'
 import subprocess, sys, shutil
 sys.path.insert(0, '<absolute-path-to-to-repo>')
 from bot.tweet import truncate_tweet
+import grapheme
 
 tweet = """<your tweet here>"""
 trimmed = truncate_tweet(tweet)  # grapheme-aware, no ellipsis
+length = grapheme.length(trimmed)
 
 # Prefer pbcopy (macOS), fall back to xclip, wl-copy, or print.
+# A binary present on PATH can still fail at runtime (e.g. xclip in headless
+# SSH, wl-copy without a Wayland session) — catch that and try the next one.
+copied = False
 for cmd in (["pbcopy"], ["xclip", "-selection", "clipboard"], ["wl-copy"]):
-    if shutil.which(cmd[0]):
-        subprocess.run(cmd, input=trimmed, text=True, check=True)
-        print(f"copied ({len(trimmed)} chars / grapheme-safe) via {cmd[0]}")
-        break
-else:
-    print("no clipboard tool found; paste manually:")
+    if not shutil.which(cmd[0]):
+        continue
+    try:
+        subprocess.run(cmd, input=trimmed, text=True, check=True,
+                       capture_output=True, timeout=5)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        continue
+    print(f"copied ({length} graphemes) via {cmd[0]}")
+    copied = True
+    break
+if not copied:
+    print("no clipboard tool available; paste manually:")
     print(trimmed)
 PY
 ```
