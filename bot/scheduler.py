@@ -27,7 +27,7 @@ from bot.llm.base import Message
 from bot.llm.router import Providers, call_llm
 from bot.persona import VOICE_ORCHURATOR
 from bot.prompts import SYSTEM_DAILY
-from bot.week import local_date_for
+from bot.week import fz_week_idx, iso_week_key, local_date_for, parse_dob
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +167,48 @@ def _format_captures_for_daily(rows: list[aiosqlite.Row]) -> str:
     return "\n".join(lines)
 
 
+async def weekly_reminder_job(
+    *,
+    conn: aiosqlite.Connection,
+    settings: Settings,
+    bot,
+) -> bool:
+    """When WEEKLY_DIGEST_ENABLED=false, ping the owner at the configured
+    weekly time with a nudge to run the digest locally. Zero LLM cost, no
+    GitHub push — just a DM so the ritual still happens.
+
+    Skipped silently if today has no captures (nothing to reflect on) or
+    if the bot has no way to DM (no owner).
+    """
+    if settings.TELEGRAM_OWNER_ID == 0:
+        return False
+
+    today_local = local_date_for(datetime.now(timezone.utc), settings.TIMEZONE)
+    fz_week = fz_week_idx(today_local, parse_dob(settings.DOB))
+    iso_week = iso_week_key(today_local)
+
+    async with conn.execute(
+        "SELECT COUNT(*) FROM captures WHERE fz_week_idx = ? AND kind != 'why'",
+        (fz_week,),
+    ) as cur:
+        row = await cur.fetchone()
+    count = int(row[0]) if row else 0
+    if count == 0:
+        log.info("weekly_reminder: zero captures in %s, skipping", iso_week)
+        return False
+
+    text = (
+        f"🕯  digest time — {iso_week} has {count} captures. "
+        f"pull the repo and run the digest prompt locally when you're ready."
+    )
+    try:
+        await bot.send_message(chat_id=settings.TELEGRAM_OWNER_ID, text=text)
+    except Exception:
+        log.exception("weekly_reminder: send_message failed")
+        return False
+    return True
+
+
 async def daily_prompt_job(
     *,
     conn: aiosqlite.Connection,
@@ -296,23 +338,34 @@ def build_scheduler(
             replace_existing=True,
         )
 
-        # Weekly digest is opt-out: some users prefer to run the digest
-        # themselves (e.g. via Claude Code against the captures repo) rather
-        # than have the bot burn Opus tokens on a schedule. `/export` still
-        # works either way.
+        # Weekly cron is opt-in for the digest itself. Either way, the bot
+        # fires something at the configured weekend time:
+        # - WEEKLY_DIGEST_ENABLED=true  → generate the essay server-side
+        # - WEEKLY_DIGEST_ENABLED=false → ping the owner to run it locally
+        wh, wm = _parse_hhmm(settings.WEEKLY_DIGEST_LOCAL_TIME)
+        weekly_trigger = CronTrigger(
+            day_of_week=settings.WEEKLY_DIGEST_DOW,
+            hour=wh, minute=wm, timezone=settings.TIMEZONE,
+        )
         if settings.WEEKLY_DIGEST_ENABLED:
-            wh, wm = _parse_hhmm(settings.WEEKLY_DIGEST_LOCAL_TIME)
             scheduler.add_job(
                 digest_weekly.weekly_digest_job,
                 kwargs={
                     "conn": conn, "settings": settings,
                     "providers": providers, "bot": bot,
                 },
-                trigger=CronTrigger(
-                    day_of_week=settings.WEEKLY_DIGEST_DOW,
-                    hour=wh, minute=wm, timezone=settings.TIMEZONE,
-                ),
+                trigger=weekly_trigger,
                 id="weekly_digest",
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True,
+            )
+        else:
+            scheduler.add_job(
+                weekly_reminder_job,
+                kwargs={"conn": conn, "settings": settings, "bot": bot},
+                trigger=weekly_trigger,
+                id="weekly_reminder",
                 max_instances=1,
                 coalesce=True,
                 replace_existing=True,

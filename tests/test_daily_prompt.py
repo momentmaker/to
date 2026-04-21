@@ -441,10 +441,10 @@ async def test_reflect_handler_tells_user_when_nothing_to_reflect_on(conn):
 
 # ---- scheduler structure --------------------------------------------------
 
-def test_build_scheduler_skips_weekly_digest_by_default(conn):
-    """WEEKLY_DIGEST_ENABLED defaults to False — the weekend cron is opt-in
-    to match "expensive operations require explicit enablement." Daily
-    prompt + housekeeping jobs are unaffected.
+def test_build_scheduler_registers_weekly_reminder_by_default(conn):
+    """WEEKLY_DIGEST_ENABLED defaults to False. At the configured weekly
+    time the bot pings the owner to run the digest locally — zero LLM
+    cost, just a nudge to keep the ritual.
     """
     providers = Providers(_SpyProv(""), None)
     bot = MagicMock()
@@ -453,7 +453,8 @@ def test_build_scheduler_skips_weekly_digest_by_default(conn):
     )
     ids = {j.id for j in scheduler.get_jobs()}
     assert "weekly_digest" not in ids
-    assert ids == {"process_pending", "nightly_sync", "daily_prompt"}
+    assert "weekly_reminder" in ids
+    assert ids == {"process_pending", "nightly_sync", "daily_prompt", "weekly_reminder"}
 
 
 def test_build_scheduler_registers_weekly_digest_when_explicitly_enabled(conn):
@@ -465,7 +466,66 @@ def test_build_scheduler_registers_weekly_digest_when_explicitly_enabled(conn):
         providers=providers, bot=bot,
     )
     ids = {j.id for j in scheduler.get_jobs()}
+    # When opted in, we run the digest itself — no redundant reminder.
+    assert "weekly_digest" in ids
+    assert "weekly_reminder" not in ids
     assert ids == {"process_pending", "nightly_sync", "daily_prompt", "weekly_digest"}
+
+
+@pytest.mark.asyncio
+async def test_weekly_reminder_dms_owner_with_capture_count(conn):
+    from bot import db as db_mod
+    from datetime import date
+
+    settings = _settings(WEEKLY_DIGEST_ENABLED=False)
+    # Seed a few captures for this week. Use today's date so fz_week_idx
+    # matches what the reminder computes.
+    for i in range(3):
+        await db_mod.insert_capture(
+            conn, kind="text", raw=f"line {i}",
+            telegram_msg_id=i + 1,
+            dob=date(1990, 1, 1), tz_name="UTC",
+        )
+
+    bot = MagicMock(); bot.send_message = AsyncMock()
+    sent = await sched_mod.weekly_reminder_job(
+        conn=conn, settings=settings, bot=bot,
+    )
+    assert sent is True
+    bot.send_message.assert_awaited_once()
+    call = bot.send_message.await_args
+    assert call.kwargs["chat_id"] == 42
+    assert "3 captures" in call.kwargs["text"]
+    assert "digest" in call.kwargs["text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_weekly_reminder_skips_when_zero_captures_this_week(conn):
+    settings = _settings(WEEKLY_DIGEST_ENABLED=False)
+    bot = MagicMock(); bot.send_message = AsyncMock()
+    sent = await sched_mod.weekly_reminder_job(
+        conn=conn, settings=settings, bot=bot,
+    )
+    assert sent is False
+    bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_weekly_reminder_skips_without_owner(conn):
+    from bot import db as db_mod
+    from datetime import date
+
+    await db_mod.insert_capture(
+        conn, kind="text", raw="x", telegram_msg_id=1,
+        dob=date(1990, 1, 1), tz_name="UTC",
+    )
+    settings = _settings(WEEKLY_DIGEST_ENABLED=False, TELEGRAM_OWNER_ID=0)
+    bot = MagicMock(); bot.send_message = AsyncMock()
+    sent = await sched_mod.weekly_reminder_job(
+        conn=conn, settings=settings, bot=bot,
+    )
+    assert sent is False
+    bot.send_message.assert_not_awaited()
 
 
 def test_build_scheduler_skips_daily_prompt_without_bot(conn):
