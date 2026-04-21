@@ -1,0 +1,14 @@
+services:
+  to:
+    build: .
+    env_file: .env
+    environment:
+      - SQLITE_PATH=/data/to.db
+    volumes:
+      - to-data:/data
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+volumes:
+  to-data:

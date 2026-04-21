@@ -1,0 +1,510 @@
+"""Telegram handlers: owner gate, /start, /help, /status, text + URL capture."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from datetime import datetime, timezone
+from typing import Any
+
+from telegram import Update
+from telegram.ext import ContextTypes
+
+from bot import db, github_sync, process, reflection, scheduler as sched_mod, why
+from bot.config import Settings
+from bot.ingest import vision as vision_mod
+from bot.ingest import voice as voice_mod
+from bot.ingest.router import classify_text, scrape_url
+from bot.llm.router import Providers
+from bot.persona import ACK_TEXT, GREETING, HELP_TEXT
+from bot.week import fz_week_idx, iso_week_key, local_date_for
+
+log = logging.getLogger(__name__)
+
+
+def is_owner(update: Update, settings: Settings) -> bool:
+    user = update.effective_user
+    if user is None or settings.TELEGRAM_OWNER_ID == 0:
+        return False
+    return user.id == settings.TELEGRAM_OWNER_ID
+
+
+async def _ensure_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    settings: Settings = context.bot_data["settings"]
+    if not is_owner(update, settings):
+        log.info("rejecting non-owner update from user_id=%s", getattr(update.effective_user, "id", None))
+        return False
+    return True
+
+
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _ensure_owner(update, context):
+        return
+    await update.message.reply_text(GREETING)
+
+
+async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _ensure_owner(update, context):
+        return
+    await update.message.reply_text(HELP_TEXT)
+
+
+async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _ensure_owner(update, context):
+        return
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+    dob = db.settings_dob(settings.DOB)
+
+    total = await db.count_captures(conn)
+    this_week = await db.count_captures_this_week(conn, dob=dob, tz_name=settings.TIMEZONE)
+    today_local = local_date_for(datetime.now(timezone.utc), settings.TIMEZONE)
+    w_idx = fz_week_idx(today_local, dob)
+    w_key = iso_week_key(today_local)
+
+    text = (
+        f"corpus: {total}\n"
+        f"this week ({w_key}, fz-week {w_idx}): {this_week}"
+    )
+    await update.message.reply_text(text)
+
+
+def _forward_origin_payload(message) -> dict | None:
+    """Extract forwarded-message provenance, if any, for the capture's payload."""
+    origin = getattr(message, "forward_origin", None)
+    if origin is None:
+        return None
+    data: dict[str, Any] = {"type": origin.__class__.__name__}
+    for attr in ("sender_user", "sender_chat", "chat"):
+        obj = getattr(origin, attr, None)
+        if obj is not None:
+            data[attr] = {
+                "id": getattr(obj, "id", None),
+                "name": getattr(obj, "full_name", None) or getattr(obj, "title", None),
+            }
+    sender_name = getattr(origin, "sender_user_name", None)
+    if sender_name:
+        data["sender_user_name"] = sender_name
+    date_val = getattr(origin, "date", None)
+    if date_val is not None:
+        data["date"] = date_val.isoformat() if hasattr(date_val, "isoformat") else str(date_val)
+    return data
+
+
+async def _process_in_background(
+    *, capture_id: int, content: str, settings: Settings,
+    providers: Providers, db_conn,
+) -> None:
+    """Fire-and-forget LLM processing + GitHub push. Updates the capture row
+    on completion. GitHub failure is logged but doesn't block — nightly_sync
+    will catch up.
+    """
+    try:
+        processed = await process.process_capture(
+            content=content,
+            settings=settings,
+            providers=providers,
+            conn=db_conn,
+        )
+        await process.mark_processed(db_conn, capture_id=capture_id, processed=processed)
+    except Exception as e:
+        log.exception("processing failed for capture_id=%s", capture_id)
+        try:
+            await process.mark_failed(db_conn, capture_id=capture_id, error=str(e))
+        except Exception:
+            log.exception("mark_failed also failed for capture_id=%s", capture_id)
+    # Regardless of LLM outcome, try to push the raw capture. A failed ingest
+    # still deserves to be in the repo.
+    try:
+        await github_sync.push_capture(capture_id, settings=settings, conn=db_conn)
+    except Exception:
+        log.exception(
+            "github push failed for capture_id=%s; nightly_sync will retry",
+            capture_id,
+        )
+
+
+async def _push_in_background(
+    *, capture_id: int, settings: Settings, db_conn,
+) -> None:
+    try:
+        await github_sync.push_capture(capture_id, settings=settings, conn=db_conn)
+    except Exception:
+        log.exception(
+            "background github push failed for capture_id=%s; nightly_sync will retry",
+            capture_id,
+        )
+
+
+async def _consume_pending_if_any(
+    message, settings: Settings, conn, dob, text: str,
+    providers: Providers | None,
+) -> bool:
+    """If there's a live pending-why OR pending-reflection, store `text` as
+    the appropriate kind, link it, ack, and kick off follow-up processing.
+    Returns True when a pending state was consumed (caller should early-exit).
+    """
+    forward = _forward_origin_payload(message)
+    base_payload: dict[str, Any] = {"forward_origin": forward} if forward else {}
+
+    # Why has priority: it's specific to a URL the user just saved.
+    pending_parent = await why.consume_if_live(conn)
+    if pending_parent is not None:
+        capture_id = await db.insert_capture(
+            conn,
+            kind="why",
+            source="telegram",
+            raw=text,
+            payload=base_payload or None,
+            parent_id=pending_parent,
+            telegram_msg_id=message.message_id,
+            dob=dob,
+            tz_name=settings.TIMEZONE,
+        )
+        if capture_id is None:
+            return True
+        await message.reply_text(ACK_TEXT)
+        asyncio.create_task(
+            _push_in_background(capture_id=capture_id, settings=settings, db_conn=conn)
+        )
+        return True
+
+    # Daily reflection: attaches to today's `daily` row.
+    pending_local_date = await reflection.consume_if_live(conn)
+    if pending_local_date is not None:
+        capture_id = await db.insert_capture(
+            conn,
+            kind="reflection",
+            source="telegram",
+            raw=text,
+            payload=base_payload or None,
+            telegram_msg_id=message.message_id,
+            dob=dob,
+            tz_name=settings.TIMEZONE,
+        )
+        if capture_id is None:
+            return True
+        await conn.execute(
+            "UPDATE daily SET reflection_capture_id = ? WHERE local_date = ?",
+            (capture_id, pending_local_date),
+        )
+        await conn.commit()
+        await message.reply_text(ACK_TEXT)
+        if providers is not None and text.strip():
+            asyncio.create_task(
+                _process_in_background(
+                    capture_id=capture_id, content=text,
+                    settings=settings, providers=providers, db_conn=conn,
+                )
+            )
+        return True
+
+    return False
+
+
+async def _ask_and_set_pending_why(
+    *, parent_id: int, url: str, title: str | None,
+    settings: Settings, providers: Providers, conn, bot, chat_id: int,
+) -> None:
+    question = await why.ask_why_question(
+        url=url, title=title,
+        settings=settings, providers=providers, conn=conn,
+    )
+    try:
+        await bot.send_message(chat_id=chat_id, text=question)
+    except Exception:
+        log.exception("failed to send why question")
+        return
+    await why.set_pending(
+        conn, parent_id=parent_id, window_minutes=settings.WHY_WINDOW_MINUTES
+    )
+
+
+async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _ensure_owner(update, context):
+        return
+    if update.message is None or update.message.text is None:
+        return
+    if update.message.chat.type != "private":
+        return
+
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+    providers: Providers | None = context.bot_data.get("providers")
+    dob = db.settings_dob(settings.DOB)
+
+    text = update.message.text
+    kind, url = classify_text(text)
+
+    # Plain-text messages may be an in-flight "why" or daily-reflection reply.
+    # URL messages are never treated as whys — the user has moved on.
+    if kind == "text":
+        consumed = await _consume_pending_if_any(update.message, settings, conn, dob, text, providers)
+        if consumed:
+            return
+
+    forward = _forward_origin_payload(update.message)
+    payload: dict[str, Any] = {}
+    if forward:
+        payload["forward_origin"] = forward
+
+    processing_content: str = text
+    source = "telegram"
+    scrape_title: str | None = None
+
+    if kind == "url" and url is not None:
+        scrape = await scrape_url(url, settings=settings)
+        payload["scrape"] = {"source": scrape.source, **scrape.payload}
+        if scrape.error:
+            payload["scrape_error"] = scrape.error
+        processing_content = scrape.content or text
+        source = scrape.source
+        # HN payloads nest title under "story"; article/reddit/x have it at top level.
+        if isinstance(scrape.payload, dict):
+            scrape_title = (
+                scrape.payload.get("title")
+                or (scrape.payload.get("story") or {}).get("title")
+            )
+
+    capture_id = await db.insert_capture(
+        conn,
+        kind=kind,
+        source=source,
+        url=url,
+        raw=text,
+        payload=payload or None,
+        telegram_msg_id=update.message.message_id,
+        dob=dob,
+        tz_name=settings.TIMEZONE,
+    )
+    if capture_id is None:
+        log.info("ignoring duplicate telegram_msg_id=%s", update.message.message_id)
+        return
+
+    await update.message.reply_text(ACK_TEXT)
+
+    # Don't burn tokens processing a bare URL. A failed scrape leaves
+    # processing_content equal to the URL (or the raw message text which IS
+    # just the URL in the pure-link case) — nothing useful for the LLM.
+    content_stripped = processing_content.strip() if processing_content else ""
+    should_process = (
+        providers is not None
+        and bool(content_stripped)
+        and content_stripped != (url or "").strip()
+    )
+    if should_process:
+        asyncio.create_task(
+            _process_in_background(
+                capture_id=capture_id,
+                content=processing_content,
+                settings=settings,
+                providers=providers,
+                db_conn=conn,
+            )
+        )
+
+    # Kick off the capture-time "why?" for URLs only.
+    if kind == "url" and url is not None and providers is not None:
+        asyncio.create_task(
+            _ask_and_set_pending_why(
+                parent_id=capture_id, url=url, title=scrape_title,
+                settings=settings, providers=providers, conn=conn,
+                bot=context.bot, chat_id=update.message.chat.id,
+            )
+        )
+
+
+async def skip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel any pending 'why?' or daily reflection without storing."""
+    if not await _ensure_owner(update, context):
+        return
+    conn = context.bot_data["db"]
+    await why.clear_pending(conn)
+    await reflection.clear_pending(conn)
+    await update.message.reply_text("skipped.")
+
+
+async def reflect_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Force today's daily prompt to fire now. Useful when the owner wants to
+    reflect outside the scheduled window."""
+    if not await _ensure_owner(update, context):
+        return
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+    providers: Providers | None = context.bot_data.get("providers")
+    if providers is None:
+        await update.message.reply_text("no LLM configured; cannot generate prompt.")
+        return
+    sent = await sched_mod.daily_prompt_job(
+        conn=conn, settings=settings, providers=providers, bot=context.bot,
+        force=True,
+    )
+    if not sent:
+        await update.message.reply_text("nothing to reflect on yet today.")
+
+
+async def voice_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _ensure_owner(update, context):
+        return
+    if update.message is None:
+        return
+    if update.message.chat.type != "private":
+        return
+
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+    providers: Providers | None = context.bot_data.get("providers")
+    dob = db.settings_dob(settings.DOB)
+
+    audio = update.message.voice or update.message.audio
+    if audio is None:
+        return
+
+    # Transcribe first so we can route the text through the same
+    # pending-why / pending-reflection logic as text messages.
+    try:
+        file = await audio.get_file()
+        audio_bytes = bytes(await file.download_as_bytearray())
+    except Exception:
+        log.exception("voice download failed")
+        await update.message.reply_text("could not fetch the voice note. try again.")
+        return
+    transcript = ""
+    transcription_error: str | None = None
+    try:
+        transcript = await voice_mod.transcribe_voice_bytes(
+            audio_bytes, filename=getattr(audio, "file_name", None) or "voice.ogg",
+            settings=settings,
+        )
+    except Exception as e:
+        log.exception("whisper transcription failed")
+        transcription_error = str(e)[:200]
+
+    if transcript.strip():
+        consumed = await _consume_pending_if_any(
+            update.message, settings, conn, dob, transcript, providers,
+        )
+        if consumed:
+            return
+
+    payload: dict[str, Any] = {}
+    forward = _forward_origin_payload(update.message)
+    if forward:
+        payload["forward_origin"] = forward
+    if transcript:
+        payload["transcript"] = transcript
+    if transcription_error:
+        payload["transcript_error"] = transcription_error
+
+    capture_id = await db.insert_capture(
+        conn,
+        kind="voice",
+        source="telegram",
+        raw=transcript or None,
+        payload=payload or None,
+        telegram_msg_id=update.message.message_id,
+        dob=dob,
+        tz_name=settings.TIMEZONE,
+    )
+    if capture_id is None:
+        return
+
+    await update.message.reply_text(ACK_TEXT)
+
+    if providers is not None and transcript:
+        asyncio.create_task(
+            _process_in_background(
+                capture_id=capture_id, content=transcript,
+                settings=settings, providers=providers, db_conn=conn,
+            )
+        )
+
+
+async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _ensure_owner(update, context):
+        return
+    if update.message is None:
+        return
+    if update.message.chat.type != "private":
+        return
+
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+    providers: Providers | None = context.bot_data.get("providers")
+    dob = db.settings_dob(settings.DOB)
+
+    # Pick the largest available photo size
+    photo_sizes = update.message.photo or []
+    if not photo_sizes:
+        return
+    photo = photo_sizes[-1]
+
+    try:
+        file = await photo.get_file()
+        image_bytes = bytes(await file.download_as_bytearray())
+    except Exception:
+        log.exception("photo download failed")
+        await update.message.reply_text("could not fetch the photo. try again.")
+        return
+
+    caption = update.message.caption or ""
+    payload: dict[str, Any] = {"caption": caption} if caption else {}
+    forward = _forward_origin_payload(update.message)
+    if forward:
+        payload["forward_origin"] = forward
+
+    vision_text: str = caption  # fallback content if vision fails
+    if providers is not None:
+        try:
+            vision_result = await vision_mod.ocr_and_describe(
+                image_bytes,
+                mime_type="image/jpeg",
+                settings=settings, providers=providers, conn=conn,
+            )
+            payload["vision"] = vision_result
+            # combine OCR + description + caption for downstream processing
+            parts = [vision_result.get("ocr") or "", vision_result.get("description") or ""]
+            if caption:
+                parts.insert(0, caption)
+            vision_text = "\n\n".join(p for p in parts if p.strip())
+        except Exception as e:
+            log.exception("vision failed")
+            payload["vision_error"] = str(e)[:200]
+
+    capture_id = await db.insert_capture(
+        conn,
+        kind="image",
+        source="telegram",
+        raw=caption or None,
+        payload=payload or None,
+        telegram_msg_id=update.message.message_id,
+        dob=dob,
+        tz_name=settings.TIMEZONE,
+    )
+    if capture_id is None:
+        return
+
+    await update.message.reply_text(ACK_TEXT)
+
+    if providers is not None and vision_text.strip():
+        asyncio.create_task(
+            _process_in_background(
+                capture_id=capture_id, content=vision_text,
+                settings=settings, providers=providers, db_conn=conn,
+            )
+        )
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    log.exception("unhandled error", exc_info=context.error)
+    try:
+        from bot.notify import send_alert
+        msg = str(context.error)[:200] if context.error else "unknown error"
+        await send_alert(f"bot error: <code>{msg}</code>", severity="critical")
+    except Exception:
+        pass
+    if isinstance(update, Update) and update.message is not None:
+        try:
+            await update.message.reply_text("something slipped. try again.")
+        except Exception:
+            pass
