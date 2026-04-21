@@ -62,12 +62,8 @@ class _FakeReader:
 
 
 def test_extract_happy_path_tiny(monkeypatch):
-    monkeypatch.setattr(
-        pdf_mod, "__name__", "bot.ingest.pdf"
-    )  # stability; no-op but documents intent
-    from pypdf import PdfReader as _Real
     fake = _FakeReader(["chapter one", "chapter two"])
-    monkeypatch.setattr("pypdf.PdfReader", lambda *a, **kw: fake)
+    monkeypatch.setattr("bot.ingest.pdf.PdfReader", lambda *a, **kw: fake)
 
     out = pdf_mod.extract_pdf_bytes(b"%PDF-1.4 stub")
     assert "chapter one" in out.text
@@ -79,7 +75,7 @@ def test_extract_happy_path_tiny(monkeypatch):
 
 def test_extract_rejects_encrypted(monkeypatch):
     fake = _FakeReader([], encrypted=True)
-    monkeypatch.setattr("pypdf.PdfReader", lambda *a, **kw: fake)
+    monkeypatch.setattr("bot.ingest.pdf.PdfReader", lambda *a, **kw: fake)
 
     out = pdf_mod.extract_pdf_bytes(b"%PDF-1.4 stub")
     assert out.tier == "large"
@@ -89,7 +85,7 @@ def test_extract_rejects_encrypted(monkeypatch):
 
 def test_extract_rejects_too_many_pages(monkeypatch):
     fake = _FakeReader(["x"] * (pdf_mod.MAX_PAGES + 5))
-    monkeypatch.setattr("pypdf.PdfReader", lambda *a, **kw: fake)
+    monkeypatch.setattr("bot.ingest.pdf.PdfReader", lambda *a, **kw: fake)
 
     out = pdf_mod.extract_pdf_bytes(b"%PDF-1.4 stub")
     assert out.tier == "large"
@@ -102,7 +98,7 @@ def test_extract_rejects_too_many_tokens(monkeypatch):
     # One page with a huge body — past the token threshold.
     big_text = "x" * (pdf_mod.LARGE_TOKENS * 4 + 100)  # ~LARGE_TOKENS+25 tokens
     fake = _FakeReader([big_text])
-    monkeypatch.setattr("pypdf.PdfReader", lambda *a, **kw: fake)
+    monkeypatch.setattr("bot.ingest.pdf.PdfReader", lambda *a, **kw: fake)
 
     out = pdf_mod.extract_pdf_bytes(b"%PDF-1.4 stub")
     assert out.tier == "large"
@@ -115,12 +111,26 @@ def test_extract_handles_malformed_pdf(monkeypatch):
     from pypdf.errors import PdfReadError
     def _raising(*_a, **_kw):
         raise PdfReadError("not a pdf")
-    monkeypatch.setattr("pypdf.PdfReader", _raising)
+    monkeypatch.setattr("bot.ingest.pdf.PdfReader", _raising)
 
     out = pdf_mod.extract_pdf_bytes(b"garbage")
     assert out.tier == "large"
     assert out.rejected_reason is not None
     assert "couldn't read" in out.rejected_reason.lower()
+
+
+def test_extract_handles_unexpected_exceptions(monkeypatch):
+    """pypdf can raise non-PdfReadError shapes across versions (TypeError,
+    ValueError) — the extractor must still honor its 'never raise' contract.
+    """
+    def _raising(*_a, **_kw):
+        raise TypeError("bytes-like object expected")
+    monkeypatch.setattr("bot.ingest.pdf.PdfReader", _raising)
+
+    out = pdf_mod.extract_pdf_bytes(b"")
+    assert out.tier == "large"
+    assert out.rejected_reason is not None
+    assert "TypeError" in out.rejected_reason
 
 
 def test_extract_skips_failing_pages(monkeypatch):
@@ -131,7 +141,7 @@ def test_extract_skips_failing_pages(monkeypatch):
     class _MixedReader:
         pages = [_FakePage("good one"), _BrokenPage(), _FakePage("good two")]
         is_encrypted = False
-    monkeypatch.setattr("pypdf.PdfReader", lambda *a, **kw: _MixedReader())
+    monkeypatch.setattr("bot.ingest.pdf.PdfReader", lambda *a, **kw: _MixedReader())
 
     out = pdf_mod.extract_pdf_bytes(b"%PDF-1.4 stub")
     assert out.tier == "tiny"
@@ -143,7 +153,7 @@ def test_extract_medium_tier(monkeypatch):
     # Text in the tiny < tokens <= large range.
     mid = "x" * ((pdf_mod.TINY_TOKENS + 1000) * 4)
     fake = _FakeReader([mid])
-    monkeypatch.setattr("pypdf.PdfReader", lambda *a, **kw: fake)
+    monkeypatch.setattr("bot.ingest.pdf.PdfReader", lambda *a, **kw: fake)
 
     out = pdf_mod.extract_pdf_bytes(b"%PDF-1.4 stub")
     assert out.tier == "medium"
@@ -202,11 +212,56 @@ async def test_document_handler_ignores_non_pdf_mime(conn):
 
 
 @pytest.mark.asyncio
+async def test_document_handler_accepts_parameterized_pdf_mime(conn, monkeypatch):
+    """Clients that send 'application/pdf; charset=binary' must still work."""
+    from bot import handlers
+    from bot.handlers import document_message_handler
+
+    fake = _FakeReader(["ok"])
+    monkeypatch.setattr("bot.ingest.pdf.PdfReader", lambda *a, **kw: fake)
+    async def _noop_process(**kwargs): return None
+    monkeypatch.setattr(handlers, "_process_in_background", _noop_process)
+
+    update, _doc = _mock_message_with_pdf(
+        pdf_bytes=b"%PDF-1.4 stub", mime="application/pdf; charset=binary",
+    )
+    context = MagicMock()
+    context.bot_data = {"settings": _settings(), "db": conn, "providers": None}
+
+    await document_message_handler(update, context)
+    async with conn.execute("SELECT COUNT(*) FROM captures") as cur:
+        (n,) = await cur.fetchone()
+    assert n == 1
+
+
+@pytest.mark.asyncio
+async def test_document_handler_rejects_spoofed_pdf_mime(conn, monkeypatch):
+    """A MIME like 'application/pdfhax' must NOT be accepted."""
+    from bot.handlers import document_message_handler
+
+    def _should_not_call(*a, **kw):
+        raise AssertionError("should not reach PdfReader")
+    monkeypatch.setattr("bot.ingest.pdf.PdfReader", _should_not_call)
+
+    update, _doc = _mock_message_with_pdf(
+        pdf_bytes=b"doesn't matter", mime="application/pdfhax",
+    )
+    context = MagicMock()
+    context.bot_data = {"settings": _settings(), "db": conn, "providers": None}
+
+    await document_message_handler(update, context)
+    update.message.reply_text.assert_not_called()
+    async with conn.execute("SELECT COUNT(*) FROM captures") as cur:
+        (n,) = await cur.fetchone()
+    assert n == 0
+
+
+@pytest.mark.asyncio
 async def test_document_handler_rejects_oversize(conn, monkeypatch):
     from bot.handlers import document_message_handler
 
     fake = _FakeReader(["x"] * (pdf_mod.MAX_PAGES + 10))
-    monkeypatch.setattr("pypdf.PdfReader", lambda *a, **kw: fake)
+    monkeypatch.setattr("bot.ingest.pdf.PdfReader", lambda *a, **kw: fake)
 
     update, _doc = _mock_message_with_pdf(pdf_bytes=b"%PDF-1.4 stub")
     context = MagicMock()
@@ -227,7 +282,7 @@ async def test_document_handler_rejects_empty_text(conn, monkeypatch):
     from bot.handlers import document_message_handler
 
     fake = _FakeReader(["", "   ", ""])  # pages present but no text
-    monkeypatch.setattr("pypdf.PdfReader", lambda *a, **kw: fake)
+    monkeypatch.setattr("bot.ingest.pdf.PdfReader", lambda *a, **kw: fake)
 
     update, _doc = _mock_message_with_pdf(pdf_bytes=b"%PDF-1.4 stub")
     context = MagicMock()
@@ -248,7 +303,7 @@ async def test_document_handler_happy_path_tiny(conn, monkeypatch):
     from bot.handlers import document_message_handler
 
     fake = _FakeReader(["the small ignition", "one more line"])
-    monkeypatch.setattr("pypdf.PdfReader", lambda *a, **kw: fake)
+    monkeypatch.setattr("bot.ingest.pdf.PdfReader", lambda *a, **kw: fake)
 
     # Stub out the background processing so the test doesn't need a real LLM.
     async def _noop_process(**kwargs): return None

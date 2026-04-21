@@ -21,6 +21,8 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
+from pypdf import PdfReader
+
 log = logging.getLogger(__name__)
 
 
@@ -71,15 +73,16 @@ def extract_pdf_bytes(pdf_bytes: bytes) -> PdfExtract:
     empty extract with rejected_reason set. pypdf is fast and local; the only
     real failure modes are encrypted PDFs and corrupt bytes.
     """
-    from pypdf import PdfReader
-    from pypdf.errors import PdfReadError
-
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
-    except PdfReadError as e:
+    except Exception as e:
+        # pypdf can raise PdfReadError, EmptyFileError, or various
+        # ValueError/TypeError shapes depending on the malformation. The
+        # handler treats any failure here as a user-fixable rejection.
         return PdfExtract(
             text="", page_count=0, char_count=0, token_estimate=0,
-            tier="large", rejected_reason=f"couldn't read the PDF: {e}",
+            tier="large",
+            rejected_reason=f"couldn't read the PDF: {type(e).__name__}: {e}",
         )
 
     if reader.is_encrypted:

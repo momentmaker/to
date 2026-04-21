@@ -909,7 +909,11 @@ async def document_message_handler(update: Update, context: ContextTypes.DEFAULT
     doc = update.message.document
     if doc is None:
         return
-    if (doc.mime_type or "").lower() != _PDF_MIME:
+    # MIME can carry parameters like "application/pdf; charset=binary" —
+    # split on ';' and match the base type exactly so we don't accept
+    # spoofed types like "application/pdfhax".
+    mime = (doc.mime_type or "").lower().split(";", 1)[0].strip()
+    if mime != _PDF_MIME:
         # Other document types aren't supported yet — keep silent so we don't
         # spam the owner when they forward random files.
         return
