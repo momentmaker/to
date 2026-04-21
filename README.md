@@ -302,7 +302,21 @@ Without these, captures stay in the SQLite file only (not pushed anywhere).
 | `OPENAI_MODEL_DIGEST` | `gpt-4.1` | |
 | `OPENAI_MODEL_CHEAP`  | `gpt-4.1-nano` | |
 
-If only one key is set, the router silently falls back to whichever provider is configured, with a one-time warning per purpose.
+If only one key is set, the router silently falls back to whichever provider is configured, with a one-time warning per purpose. Functionally the bot works either way.
+
+**Running OpenAI-only?** The defaults above all say `anthropic`, which means you'll see 7 "falling back to openai" warnings on your first day. To silence them, flip every `LLM_PROVIDER_*` to `openai`:
+
+```
+LLM_PROVIDER_INGEST=openai
+LLM_PROVIDER_DAILY=openai
+LLM_PROVIDER_WHY=openai
+LLM_PROVIDER_DIGEST=openai
+LLM_PROVIDER_ORACLE=openai
+LLM_PROVIDER_TWEET=openai
+LLM_PROVIDER_VISION=openai
+```
+
+**Running Anthropic-only?** Voice notes won't transcribe (Whisper is OpenAI-only — there's no Anthropic equivalent). The capture still lands with a `transcript_error` field; every other path (text, URL, photo, HN, Oracle, digest) works fine on Claude alone.
 
 ### Schedule
 
