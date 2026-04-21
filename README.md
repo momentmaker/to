@@ -54,6 +54,7 @@ ask - consult your past self
 reflect - force today's prompt
 forget - delete a capture (id or "last")
 export - force weekly digest (opt-in)
+tweetweekly - post the weekly tweet from digest.md
 setmark - override this week's mark
 setvow - set the year's vow
 skip - dismiss pending question
