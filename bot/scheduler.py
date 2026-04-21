@@ -296,22 +296,27 @@ def build_scheduler(
             replace_existing=True,
         )
 
-        wh, wm = _parse_hhmm(settings.WEEKLY_DIGEST_LOCAL_TIME)
-        scheduler.add_job(
-            digest_weekly.weekly_digest_job,
-            kwargs={
-                "conn": conn, "settings": settings,
-                "providers": providers, "bot": bot,
-            },
-            trigger=CronTrigger(
-                day_of_week=settings.WEEKLY_DIGEST_DOW,
-                hour=wh, minute=wm, timezone=settings.TIMEZONE,
-            ),
-            id="weekly_digest",
-            max_instances=1,
-            coalesce=True,
-            replace_existing=True,
-        )
+        # Weekly digest is opt-out: some users prefer to run the digest
+        # themselves (e.g. via Claude Code against the captures repo) rather
+        # than have the bot burn Opus tokens on a schedule. `/export` still
+        # works either way.
+        if settings.WEEKLY_DIGEST_ENABLED:
+            wh, wm = _parse_hhmm(settings.WEEKLY_DIGEST_LOCAL_TIME)
+            scheduler.add_job(
+                digest_weekly.weekly_digest_job,
+                kwargs={
+                    "conn": conn, "settings": settings,
+                    "providers": providers, "bot": bot,
+                },
+                trigger=CronTrigger(
+                    day_of_week=settings.WEEKLY_DIGEST_DOW,
+                    hour=wh, minute=wm, timezone=settings.TIMEZONE,
+                ),
+                id="weekly_digest",
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True,
+            )
 
     return scheduler
 

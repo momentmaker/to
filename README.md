@@ -157,6 +157,45 @@ If you only have one key, set all seven to the same provider — the router will
 
 ---
 
+## Running the weekly digest yourself (no auto-cron)
+
+The weekly digest is the single most expensive thing the bot does — one Opus-class LLM call per week, ~$0.30–$1 per run depending on how much you captured. If you'd rather run it yourself against the captures GitHub repo (using Claude Code, Cursor, or any other local agent you trust), set:
+
+```
+WEEKLY_DIGEST_ENABLED=false
+```
+
+This **only** disables the Saturday-night cron. Everything else still works:
+
+- `/export` in Telegram still forces a server-side digest on demand.
+- Captures still push to the GitHub repo continuously.
+- Daily prompts + `/ask` (Oracle) still run.
+
+### Suggested local workflow with Claude Code
+
+1. Clone your private captures repo locally.
+2. Open it in Claude Code.
+3. Paste this prompt, replacing `YYYY-wNN` with the week you want:
+
+   > Read every `.md` file under `YYYY-wNN/`. Each file has TOML frontmatter + a body with the user's captures (quotes, summaries, raw text) plus any inline "why?" replies.
+   >
+   > Write an anthology essay composed **entirely of the user's own words**, following strict quote-only rules: every sentence of the essay must be a verbatim or minimally-edited substring of one of the fragments (case-insensitive, punctuation-normalized). Do not invent connective prose. Line breaks are your only authorial move.
+   >
+   > Also produce:
+   > - A single-sentence "whisper" ≤240 characters, in the user's voice.
+   > - A single Unicode grapheme "mark" that captures the week's aesthetic.
+   >
+   > Write the result to `YYYY-wNN/digest.md` with a frontmatter block `+++\nweek = "YYYY-WNN"\nmark = "…"\nwhisper = "…"\n+++` then the essay.
+   >
+   > Then update `fz-ax-backup.json` at the repo root: add or replace the entry for this week's fz-ax `weeks` map with `{mark, whisper, markedAt}` (markedAt = now in ISO UTC), and add the index to `anchors` (sorted, deduped). Bump `exportedAt`.
+
+4. Review the essay. If Claude wrote something that isn't in your captures, call it out and ask for a rewrite.
+5. Commit + push. Drop the updated `fz-ax-backup.json` into fz.ax's restore button.
+
+The bot's own quote-only validator uses the same substring rule, so the outputs are interchangeable.
+
+---
+
 ## Privacy warning
 
 **Your private GitHub repo is private from randoms, not end-to-end encrypted.** If you paste something sensitive into `to` (an API key in a text message, a URL with `user:pass@…` credentials, an embarrassing DM screenshot), it lands in SQLite AND gets pushed to GitHub in plaintext. A future repo leak or GitHub breach would expose it.

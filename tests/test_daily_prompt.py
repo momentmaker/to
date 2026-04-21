@@ -451,6 +451,24 @@ def test_build_scheduler_registers_daily_prompt_when_bot_provided(conn):
     assert ids == {"process_pending", "nightly_sync", "daily_prompt", "weekly_digest"}
 
 
+def test_build_scheduler_skips_weekly_digest_when_disabled(conn):
+    """With WEEKLY_DIGEST_ENABLED=false the cron is not registered.
+    Daily prompt + housekeeping jobs are unaffected.
+    """
+    providers = Providers(_SpyProv(""), None)
+    bot = MagicMock()
+    scheduler = sched_mod.build_scheduler(
+        conn=conn,
+        settings=_settings(WEEKLY_DIGEST_ENABLED=False),
+        providers=providers, bot=bot,
+    )
+    ids = {j.id for j in scheduler.get_jobs()}
+    assert "weekly_digest" not in ids
+    assert "daily_prompt" in ids  # other scheduled jobs still present
+    assert "process_pending" in ids
+    assert "nightly_sync" in ids
+
+
 def test_build_scheduler_skips_daily_prompt_without_bot(conn):
     providers = Providers(_SpyProv(""), None)
     scheduler = sched_mod.build_scheduler(
