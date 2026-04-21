@@ -216,13 +216,42 @@ The bot stays quiet on the weekend. At `WEEKLY_DIGEST_DOW` `WEEKLY_DIGEST_LOCAL_
 
 > 🕯 digest time — 2026-W17 has 12 captures. pull the repo and run the digest prompt locally when you're ready.
 
-Then you:
-1. `git pull` your captures repo
-2. Open it in Claude Code / Cursor / similar
-3. Paste the prompt below
-4. Review, commit, push
+You have **two paths** from there. Both produce the same files (`YYYY-wNN/digest.md` + updated `fz-ax-backup.json`) and both apply the same quote-only substring validator the bot uses server-side, so outputs are interchangeable with the server-side digest.
 
-**The prompt to paste:**
+#### Path A — the dedicated CLI (recommended)
+
+```bash
+cd ~/my-commonplace
+git pull
+ANTHROPIC_API_KEY=sk-ant-... python /path/to/to/scripts/weekly_digest.py
+```
+
+Beautiful TUI with progress stages, grapheme-aware validation, cost estimate, interactive accept/retry, and (with `--push`) a full automation mode that pulls, generates, commits, and pushes in one command.
+
+```bash
+# full automation — run it once a week
+ANTHROPIC_API_KEY=sk-ant-... python ~/path/to/to/scripts/weekly_digest.py --yes --push
+
+# or a specific week with dry-run
+python ~/path/to/to/scripts/weekly_digest.py --week 2026-w17 --dry-run
+
+# or list what's available
+python ~/path/to/to/scripts/weekly_digest.py --list
+```
+
+See `scripts/weekly_digest.py --help` for all options.
+
+**Dependencies for the CLI**: `pip install anthropic tomli_w grapheme rich`
+
+**💡 Tell your AI agent to remember your captures repo.** If you use Claude Code, Cursor, or similar, save a memory like:
+
+> my `to` captures repo lives at `~/GitHub/my-commonplace` and the `weekly_digest` CLI is at `~/GitHub/to/scripts/weekly_digest.py`
+
+Future sessions will just know — no re-explaining the layout.
+
+#### Path B — paste a prompt into Claude Code
+
+If you'd rather review + edit iteratively, skip the CLI and paste this into Claude Code from your captures repo:
 
 > Read every `.md` file under `YYYY-wNN/` (replace with the week you want). Each file has TOML frontmatter + a body with the user's captures (quotes, summaries, raw text) plus any inline "why?" replies.
 >
@@ -235,8 +264,6 @@ Then you:
 > Write the result to `YYYY-wNN/digest.md` with frontmatter `+++\nweek = "YYYY-WNN"\nmark = "…"\nwhisper = "…"\n+++` then the essay.
 >
 > Then update `fz-ax-backup.json` at the repo root: add or replace the entry for this week's fz-ax `weeks` map with `{mark, whisper, markedAt}` (markedAt = now in ISO UTC), and add the index to `anchors` (sorted, deduped). Bump `exportedAt`.
-
-The bot uses the **exact same substring validator** against the same fragments, so outputs are interchangeable.
 
 ### On-demand (for any mode)
 
