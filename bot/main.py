@@ -105,6 +105,12 @@ async def run_webhook():
                 )
                 log.info("webhook set: %s", settings.TELEGRAM_WEBHOOK_URL)
 
+            try:
+                from bot.notify import send_alert
+                await send_alert("bot started (webhook)", severity="info")
+            except Exception:
+                log.exception("startup alert failed")
+
             config = uvicorn.Config(fastapi_app, host="0.0.0.0", port=8000, log_level="info")
             server = uvicorn.Server(config)
             await server.serve()
