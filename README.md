@@ -1,222 +1,472 @@
-# to — The Commonplace
+# to — your commonplace book, run by a bot
 
-A personal Telegram bot for building your own commonplace book. Pipe in every highlight, overheard line, saved tweet, and link — `to` stores it, asks *"why?"* on links in the moment, prompts you for a daily reflection, and weekly produces an anthology essay composed entirely of your own quotes. The output also exports as a cumulative JSON backup compatible with [fz.ax](https://fz.ax) (year-in-weeks dashboard).
+**Pipe every highlight, overheard line, saved tweet, and link into Telegram. The bot stores it, asks _"why?"_ on links in the moment, nudges you for a daily reflection, and — if you want — weekly produces an anthology essay composed entirely of your own words.** Single-user by design. Your data lives in a private GitHub repo you own. MIT licensed.
 
-The bot is voiced by a persona named **orchurator** — part child, part fool, part sage. It never performs wisdom.
+The bot is voiced by a persona called **orchurator** — part child, part fool, part sage. It never performs wisdom.
 
-MIT licensed. Single-user by design (one owner per deploy).
-
----
-
-## What `to` does
-
-1. **Ingests** every highlight you send it — plain text, URLs (article/HN/Reddit/X), voice notes (Whisper transcription), photos (Claude/GPT vision OCR + description).
-2. **Asks you "why?"** in the moment whenever you save a link — captures the spark before you forget it.
-3. **Writes every capture** to a private GitHub repo you own, as Markdown with TOML frontmatter, organized by week.
-4. **Prompts you at your chosen hour** for a daily reflection built from today's captures.
-5. **Weekly**, it generates an anthology essay composed **entirely of your own words** (strict quote-only validation), plus a one-sentence "whisper" and a single-glyph "mark" — all exported as a cumulative `fz-ax-backup.json` you can drop into fz.ax.
-6. **Lets you consult your past self** via `/ask <question>` — BM25 retrieval across everything you've saved, then orchurator weaves an answer citing your own fragments.
-7. **Optionally tweets** daily reflections or weekly whispers (opt-in, your creds).
-
----
-
-## Stack
-
-- Python 3.12 + FastAPI + `python-telegram-bot[webhooks]`
-- SQLite (`aiosqlite`, WAL) with FTS5 for the Oracle
-- APScheduler for daily prompts, weekly digests, nightly catch-up
-- Anthropic + OpenAI SDKs (per-purpose routing, explicit prompt caching on Claude, automatic prefix caching on GPT-4.1)
-- Whisper (OpenAI) for voice transcription
-- Zyte + Exa for scraping JS-heavy pages and X/Reddit
-- tweepy for the optional X integration
-- Docker + Coolify for primary deploy; Fly/Railway/self-host documented below
-
----
-
-## Quickstart (local, polling mode)
-
-```bash
-git clone git@github.com:momentmaker/to.git
-cd to
-python -m venv .venv && source .venv/bin/activate
-pip install -r bot/requirements.txt
-cp .env.example .env
-# edit .env with at minimum:
-#   TELEGRAM_BOT_TOKEN
-#   TELEGRAM_OWNER_ID     (see below)
-#   DOB                   (YYYY-MM-DD — drives the fz.ax week index)
-#   ANTHROPIC_API_KEY     (or OPENAI_API_KEY; at least one required)
-MODE=polling SQLITE_PATH=./to.db python -m bot.main
+```
+orchurator is here. say anything and i will keep it.
 ```
 
-Message your bot on Telegram and send anything — text, a URL, a voice note. You'll get `"kept."` and, on URLs, an orchurator "why?" question.
+---
 
-### Finding your `TELEGRAM_OWNER_ID`
+## What this is
 
-Message [@userinfobot](https://t.me/userinfobot) and it returns your numeric Telegram user id. Every chat that isn't that id is rejected — this is a single-user bot by design.
+- A **Telegram bot** you DM your notebooks into — text, URLs, voice notes, photos, HN threads, tweets.
+- A **structured ingest pipeline** — Claude/GPT extracts title, tags, quotes, and a one-line summary from every capture.
+- A **GitHub-backed archive** — every capture lands in a private repo as Markdown with TOML frontmatter, organized `YYYY-wNN/`.
+- An **Oracle** (`/ask`) — consult your past self via BM25 retrieval + orchurator synthesis citing your own fragments by `[N]`.
+- A **weekly anthology essay** composed from **your own verbatim quotes** (no hallucination — there's a substring validator) — either generated server-side by the bot, or locally by you via Claude Code against the captures repo.
+- A **cumulative `fz-ax-backup.json`** matching [fz.ax](https://fz.ax) exactly, so your year-in-weeks dashboard updates itself.
+
+Designed to run quietly on Coolify, Fly, Railway, or any Docker host. 275 tests. Typical monthly LLM spend: $5–$15 depending on capture volume.
 
 ---
 
-## Commands
+## Run it in 15 minutes
 
-| Command | Purpose |
-|---|---|
-| `/start` `/help` | Orchurator-voiced welcome + command list |
-| `/status` | Corpus count, this week's captures, LLM month-to-date spend + cache hit rate, tweet status |
-| `/ask <question>` | Consult your past self. Supports `since:YYYY-MM-DD` and `limit:N` modifiers |
-| `/reflect` | Force today's evening prompt to fire now |
-| `/skip` | Clear any pending why-question or reflection prompt |
-| `/setvow <text>` | Store the line you want pinned above the year (shows in fz.ax) |
-| `/setmark <glyph>` | Override the current week's mark (single Unicode character) |
-| `/export` | Force the weekly digest + fz.ax backup to regenerate now |
+You'll create two Telegram bots, one private GitHub repo, grab one API key, and deploy. In that order.
 
----
+### 1. Create two Telegram bots
 
-## Deploy
+Message [@BotFather](https://t.me/botfather) on Telegram.
 
-### Coolify (recommended)
+**Main bot** — the one you'll DM your captures to:
+```
+/newbot
+name:     Commonplace
+username: <your_handle>_to_bot
+```
+Save the token (e.g. `1234567890:ABC…`). This is your `TELEGRAM_BOT_TOKEN`.
 
-1. Add a new **Dockerfile** resource pointing at this repo.
-2. Set environment variables from `.env.example` (at minimum: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_OWNER_ID`, `DOB`, one of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`).
-3. Set `MODE=webhook`, `TELEGRAM_WEBHOOK_URL` to your Coolify-provided HTTPS URL, and a random `TELEGRAM_WEBHOOK_SECRET`.
-4. Attach a persistent volume mounted at `/data` so the SQLite file survives deploys.
-5. Coolify handles TLS termination. Port 8000 is exposed by the container.
+Then, still in @BotFather:
+```
+/setprivacy     → pick your bot → Disable
+/setcommands    → pick your bot → paste the command block below
+```
 
-### Fly.io
+<details>
+<summary>📋 Command block to paste (click to expand)</summary>
+
+```
+status - corpus + budget + config
+ask - consult your past self
+reflect - force today's prompt
+forget - delete a capture (id or "last")
+export - force weekly digest (opt-in)
+setmark - override this week's mark
+setvow - set the year's vow
+skip - dismiss pending question
+help - command list
+```
+</details>
+
+**Alerting bot (dhyama)** — gets startup + error + budget-cap pings so your main DMs stay clean:
+```
+/newbot
+name:     Commonplace Alerts
+username: <your_handle>_alerts_bot
+```
+Save this token as `DHYAMA_BOT_TOKEN`.
+
+### 2. Get your Telegram IDs
+
+**Your user id** — DM [@userinfobot](https://t.me/userinfobot). It replies with your numeric id (e.g. `12345678`). This is your `TELEGRAM_OWNER_ID`. Every chat that isn't this id is rejected.
+
+**Alerting chat id** — DM your **alerting** bot with any message (say "hi"), then open in a browser:
+```
+https://api.telegram.org/bot<DHYAMA_BOT_TOKEN>/getUpdates
+```
+Copy the number from `"chat":{"id": NNNNN, ...}`. Often the same as your user id.
+
+### 3. Create your private captures repo
+
+On GitHub: **New repo → Private → name it anything** (e.g. `my-commonplace`). Seed it with a README so the default branch exists.
+
+Then make a fine-grained PAT for the bot to push to it:
+
+**Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new**
+- Resource owner: your account
+- Repository access: **Only select repositories** → pick your captures repo
+- Permissions → Repository → **Contents: Read and write**
+
+Save the token as `GITHUB_TOKEN`. Save `owner/repo` as `GITHUB_REPO`.
+
+### 4. Get an LLM key
+
+You need **at least one** of:
+
+- **Anthropic Claude** (recommended — primary provider): [console.anthropic.com](https://console.anthropic.com) → API Keys → Create → `ANTHROPIC_API_KEY`. Load $10+ credit to start.
+- **OpenAI** (required for Whisper voice transcription; otherwise optional): [platform.openai.com](https://platform.openai.com) → API keys → `OPENAI_API_KEY`. Load $5+.
+
+You can run the whole bot on just Claude — voice notes won't transcribe, but every other path works.
+
+### 5. Deploy
+
+Pick one:
+
+<details>
+<summary><b>🚀 Coolify (recommended)</b></summary>
+
+1. **Create new Application** → paste `https://github.com/momentmaker/to`
+2. **Build Pack:** `Dockerfile`
+3. **Port:** `8000`
+4. **Environment Variables** — add everything from [Configuration](#configuration). Minimum for a working boot:
+   ```
+   TELEGRAM_BOT_TOKEN=…
+   TELEGRAM_OWNER_ID=…
+   DOB=YYYY-MM-DD
+   TIMEZONE=America/Chicago     # IANA zone, NOT an abbreviation
+   ANTHROPIC_API_KEY=…          # or OPENAI_API_KEY
+   GITHUB_TOKEN=…
+   GITHUB_REPO=owner/repo
+   MODE=webhook
+   TELEGRAM_WEBHOOK_SECRET=<openssl rand -hex 32>
+   ```
+5. **Storage → Volume Mount:** Name `to-data`, Destination `/data`, leave Source Path blank.
+6. **Domains:** generate an HTTPS URL. Add it:
+   ```
+   TELEGRAM_WEBHOOK_URL=https://<your-coolify-url>/webhook
+   ```
+7. **Deploy.** First build ≈ 3 min.
+8. Your alerting bot should ping: `🟢 [to] bot started (webhook)`.
+</details>
+
+<details>
+<summary><b>Fly.io</b></summary>
 
 ```bash
 fly launch --no-deploy
-fly volumes create to_data --size 1
-fly secrets set TELEGRAM_BOT_TOKEN=... TELEGRAM_OWNER_ID=... DOB=... ANTHROPIC_API_KEY=...
+fly volumes create to_data --size 1 --region <region>
+fly secrets set \
+  TELEGRAM_BOT_TOKEN=… TELEGRAM_OWNER_ID=… \
+  DOB=… TIMEZONE=… \
+  ANTHROPIC_API_KEY=… \
+  GITHUB_TOKEN=… GITHUB_REPO=… \
+  MODE=webhook TELEGRAM_WEBHOOK_SECRET=<random>
 fly deploy
 ```
+In `fly.toml`: `[mounts] source = "to_data", destination = "/data"`. Grab the app's URL, then `fly secrets set TELEGRAM_WEBHOOK_URL=https://<yours>.fly.dev/webhook`.
+</details>
 
-Add `[mounts]` in `fly.toml`: `source = "to_data"`, `destination = "/data"`. Bot runs webhook mode on port 8000, Fly's proxy handles TLS.
+<details>
+<summary><b>Railway</b></summary>
 
-### Railway
+New project from GitHub repo, Railway auto-detects the `Dockerfile`. Set env vars in the dashboard. Attach a volume at `/data`. Generate a domain, set `TELEGRAM_WEBHOOK_URL=https://<domain>/webhook`.
+</details>
 
-1. New project from GitHub repo. Railway auto-detects the Dockerfile.
-2. Set environment variables in the Railway dashboard.
-3. Attach a volume at `/data`.
-4. Generate a domain; use it for `TELEGRAM_WEBHOOK_URL`.
-
-### Self-host (Docker Compose)
+<details>
+<summary><b>Docker Compose (self-host)</b></summary>
 
 ```bash
-cp .env.example .env  # fill in
+git clone https://github.com/momentmaker/to
+cd to
+cp .env.example .env   # fill in
 docker compose up -d
 ```
+For webhook mode, put an HTTPS-terminating proxy (Caddy, nginx, Cloudflare Tunnel) in front of port 8000. For local testing, `MODE=polling` skips the webhook entirely.
+</details>
 
-The compose file mounts a named volume `to-data` at `/data`. For webhook mode, put an HTTPS-terminating proxy (Caddy, nginx, Cloudflare Tunnel) in front of port 8000.
+### 6. First message
+
+Open your main bot in Telegram. Send `/start`. You should see:
+```
+orchurator is here. say anything and i will keep it.
+```
+
+Then send anything — a line you overheard, a link, a photo of a book page, a voice note. You'll get `kept.` within a second, and within 60 seconds a new `.md` file in your GitHub captures repo.
 
 ---
 
-## Config reference
+## Using it
 
-### Required
+### What the bot accepts
 
-| Var | What |
-|---|---|
-| `TELEGRAM_BOT_TOKEN` | From [@BotFather](https://t.me/botfather) |
-| `TELEGRAM_OWNER_ID` | Your numeric Telegram user id (from @userinfobot) |
-| `DOB` | `YYYY-MM-DD` — drives the fz.ax week index; immutable after first use |
-| One of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | At least one |
-| `TIMEZONE` | IANA zone like `Asia/Tokyo`; default `UTC` |
-
-### GitHub sync (strongly recommended)
-
-| Var | What |
-|---|---|
-| `GITHUB_TOKEN` | Fine-grained PAT with `contents:write` on the target repo |
-| `GITHUB_REPO` | `owner/repo` of your **private** commonplace repo |
-| `GITHUB_BRANCH` | Default `main` |
-
-Without these, captures stay in the SQLite file only.
-
-### LLM routing
-
-| Var | Default | Purpose |
+| Send this | And it | Stored under |
 |---|---|---|
-| `LLM_PROVIDER_INGEST` | `anthropic` | Structuring each capture |
-| `LLM_PROVIDER_DAILY`  | `anthropic` | Daily prompt generation |
-| `LLM_PROVIDER_WHY`    | `anthropic` | Capture-time why questions |
-| `LLM_PROVIDER_DIGEST` | `anthropic` | Weekly essay (quote-only) |
-| `LLM_PROVIDER_ORACLE` | `anthropic` | `/ask` retrieval + synthesis |
-| `LLM_PROVIDER_TWEET`  | `openai`    | Tweet drafting |
-| `LLM_PROVIDER_VISION` | `anthropic` | Image OCR + description |
+| Plain text | Stores verbatim + LLM-extracts title/tags/summary | `kind=text` |
+| A URL | Scrapes (Readability, Zyte fallback for JS-heavy, HN firebase for `news.ycombinator.com`, Exa for X/Reddit) → extracts → **asks you "why?"** | `kind=url`, with why as a child |
+| A voice note | Transcribes via Whisper → processes as text | `kind=voice`, transcript in `payload.transcript` |
+| A photo | Vision OCR + description via Claude/GPT-4o | `kind=image`, in `payload.vision` |
+| A forwarded message | Preserves the forward metadata | `payload.forward_origin` |
 
-If you only have one key, set all seven to the same provider — the router will fall back to whichever is available.
+### Commands
 
-### Optional
-
-- **Scrapers** (`ZYTE_API_KEY`, `EXA_API_KEY`) — improve recall on JS-heavy sites and X/Reddit.
-- **Scheduling** (`DAILY_PROMPT_LOCAL_TIME`, `WEEKLY_DIGEST_DOW`, `WEEKLY_DIGEST_LOCAL_TIME`, `WHY_WINDOW_MINUTES`).
-- **X posting** (`X_DAILY_ENABLED`, `X_WEEKLY_ENABLED`, `X_CONSUMER_KEY`, `X_CONSUMER_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET`).
-- **Alerting** (`DHYAMA_BOT_TOKEN`, `DHYAMA_CHAT_ID`) — a separate Telegram bot that receives startup + error + budget-cap notifications.
-- **Budget** (`LLM_MONTHLY_USD_CAP`) — soft cap; at 90% you get a dhyama warning, at 100% non-digest calls degrade to `*_CHEAP` models. Digest is always preserved.
+| Command | What it does |
+|---|---|
+| `/start` · `/help` | Orchurator-voiced welcome + command list |
+| `/status` | Corpus count, this week's captures, LLM month-to-date spend per provider, cache hit rate, tweet state, config |
+| `/ask <question>` | Consult your past self. Supports `since:YYYY-MM-DD` and `limit:N` anywhere in the question |
+| `/reflect` | Force today's evening prompt to fire now |
+| `/forget <id>` or `/forget last` | Irrevocably delete a capture (SQLite + GitHub). `last` targets the most recent |
+| `/skip` | Clear any pending why-question or reflection prompt |
+| `/setmark <glyph>` | Override the current week's mark (one emoji or character) |
+| `/setvow <text>` | Pin the line you want above the year in fz.ax |
+| `/export` | Force the weekly digest + fz.ax backup to regenerate now (opt-in cron; this always works regardless) |
 
 ---
 
-## Running the weekly digest yourself (default)
+## The weekly ritual
 
-The weekly digest is the single most expensive thing the bot does — one Opus-class LLM call per week, ~$0.30–$1 per run depending on how much you captured. **The Saturday-night cron is opt-in**; by default the bot stays quiet on the weekend and you run the digest yourself against the captures GitHub repo.
+The weekly digest is the single most expensive thing the bot does — one Opus-class call, ~$0.30–$1 per week. So it's **opt-in**. You have three modes:
 
-To let the bot fire the cron automatically every Saturday, set:
+### Default: local run (cheapest, most control)
+
+The bot stays quiet on the weekend. At `WEEKLY_DIGEST_DOW` `WEEKLY_DIGEST_LOCAL_TIME` (default Saturday 22:00), it **pings you on Telegram** with:
+
+> 🕯 digest time — 2026-W17 has 12 captures. pull the repo and run the digest prompt locally when you're ready.
+
+Then you:
+1. `git pull` your captures repo
+2. Open it in Claude Code / Cursor / similar
+3. Paste the prompt below
+4. Review, commit, push
+
+**The prompt to paste:**
+
+> Read every `.md` file under `YYYY-wNN/` (replace with the week you want). Each file has TOML frontmatter + a body with the user's captures (quotes, summaries, raw text) plus any inline "why?" replies.
+>
+> Write an anthology essay composed **entirely of the user's own words**, following strict quote-only rules: every sentence of the essay must be a verbatim or minimally-edited substring of one of the fragments (case-insensitive, punctuation-normalized). Do not invent connective prose. Line breaks are your only authorial move.
+>
+> Also produce:
+> - A single-sentence "whisper" ≤240 characters, in the user's voice.
+> - A single Unicode grapheme "mark" that captures the week's aesthetic.
+>
+> Write the result to `YYYY-wNN/digest.md` with frontmatter `+++\nweek = "YYYY-WNN"\nmark = "…"\nwhisper = "…"\n+++` then the essay.
+>
+> Then update `fz-ax-backup.json` at the repo root: add or replace the entry for this week's fz-ax `weeks` map with `{mark, whisper, markedAt}` (markedAt = now in ISO UTC), and add the index to `anchors` (sorted, deduped). Bump `exportedAt`.
+
+The bot uses the **exact same substring validator** against the same fragments, so outputs are interchangeable.
+
+### On-demand (for any mode)
+
+```
+/export
+```
+forces the bot to run the digest right now. Respects `/setmark` if you've already picked a mark this week.
+
+### Full auto
 
 ```
 WEEKLY_DIGEST_ENABLED=true
 ```
+makes the cron generate the digest server-side every Saturday. `/export` still works too.
 
-Either way, you still have:
+---
 
-- `/export` in Telegram forces a server-side digest on demand.
-- Captures push to the GitHub repo continuously.
-- Daily prompts + `/ask` (Oracle) run as configured.
+## Configuration
 
-### Suggested local workflow with Claude Code
+### Required
 
-1. Clone your private captures repo locally.
-2. Open it in Claude Code.
-3. Paste this prompt, replacing `YYYY-wNN` with the week you want:
+| Var | Example | What |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | `1234:ABC…` | From @BotFather |
+| `TELEGRAM_OWNER_ID` | `12345678` | Numeric Telegram user id (@userinfobot) |
+| `DOB` | `1990-01-15` | **Immutable** — drives the fz.ax week index. Set it right the first time. |
+| `TIMEZONE` | `America/Chicago` | IANA zone. `CST` / `PST` don't work. |
+| One of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | `sk-ant-…` / `sk-…` | At least one. Most features work on Anthropic alone. |
 
-   > Read every `.md` file under `YYYY-wNN/`. Each file has TOML frontmatter + a body with the user's captures (quotes, summaries, raw text) plus any inline "why?" replies.
-   >
-   > Write an anthology essay composed **entirely of the user's own words**, following strict quote-only rules: every sentence of the essay must be a verbatim or minimally-edited substring of one of the fragments (case-insensitive, punctuation-normalized). Do not invent connective prose. Line breaks are your only authorial move.
-   >
-   > Also produce:
-   > - A single-sentence "whisper" ≤240 characters, in the user's voice.
-   > - A single Unicode grapheme "mark" that captures the week's aesthetic.
-   >
-   > Write the result to `YYYY-wNN/digest.md` with a frontmatter block `+++\nweek = "YYYY-WNN"\nmark = "…"\nwhisper = "…"\n+++` then the essay.
-   >
-   > Then update `fz-ax-backup.json` at the repo root: add or replace the entry for this week's fz-ax `weeks` map with `{mark, whisper, markedAt}` (markedAt = now in ISO UTC), and add the index to `anchors` (sorted, deduped). Bump `exportedAt`.
+### GitHub sync (strongly recommended)
 
-4. Review the essay. If Claude wrote something that isn't in your captures, call it out and ask for a rewrite.
-5. Commit + push. Drop the updated `fz-ax-backup.json` into fz.ax's restore button.
+| Var | Default | What |
+|---|---|---|
+| `GITHUB_TOKEN` | — | Fine-grained PAT with contents:write on the captures repo |
+| `GITHUB_REPO` | — | `owner/repo` of your private captures repo |
+| `GITHUB_BRANCH` | `main` | Change to `master` if your repo defaults to master |
 
-The bot's own quote-only validator uses the same substring rule, so the outputs are interchangeable.
+Without these, captures stay in the SQLite file only (not pushed anywhere).
+
+### Webhook deploy
+
+| Var | What |
+|---|---|
+| `MODE` | `webhook` (production) or `polling` (local dev) |
+| `TELEGRAM_WEBHOOK_URL` | Your HTTPS URL + `/webhook` |
+| `TELEGRAM_WEBHOOK_SECRET` | Random hex string; Telegram includes it as a header, bot rejects mismatches |
+
+### LLM routing (per-purpose; defaults are sensible)
+
+| Var | Default | Purpose |
+|---|---|---|
+| `LLM_PROVIDER_INGEST` | `anthropic` | Structuring each capture |
+| `LLM_PROVIDER_DAILY`  | `anthropic` | Evening prompt |
+| `LLM_PROVIDER_WHY`    | `anthropic` | Capture-time why question |
+| `LLM_PROVIDER_DIGEST` | `anthropic` | Weekly essay (quote-only) |
+| `LLM_PROVIDER_ORACLE` | `anthropic` | `/ask` retrieval + synthesis |
+| `LLM_PROVIDER_TWEET`  | `openai`    | Tweet drafting |
+| `LLM_PROVIDER_VISION` | `anthropic` | Image OCR + description |
+| `CLAUDE_MODEL_INGEST` | `claude-sonnet-4-6` | |
+| `CLAUDE_MODEL_DIGEST` | `claude-opus-4-7` | Headline-feature model |
+| `CLAUDE_MODEL_CHEAP`  | `claude-haiku-4-5-20251001` | Used above budget cap |
+| `OPENAI_MODEL_INGEST` | `gpt-4.1-mini` | |
+| `OPENAI_MODEL_DIGEST` | `gpt-4.1` | |
+| `OPENAI_MODEL_CHEAP`  | `gpt-4.1-nano` | |
+
+If only one key is set, the router silently falls back to whichever provider is configured, with a one-time warning per purpose.
+
+### Schedule
+
+| Var | Default | What |
+|---|---|---|
+| `DAILY_PROMPT_LOCAL_TIME` | `21:30` | When the evening reflection fires |
+| `WEEKLY_DIGEST_ENABLED` | `false` | `true` runs the digest server-side; `false` just DMs a reminder |
+| `WEEKLY_DIGEST_DOW` | `sat` | `mon` `tue` `wed` `thu` `fri` `sat` `sun` |
+| `WEEKLY_DIGEST_LOCAL_TIME` | `22:00` | Local time for the digest or reminder |
+| `WHY_WINDOW_MINUTES` | `10` | After a URL save, how long to treat the next reply as the "why" |
+
+### Optional
+
+| Var | What |
+|---|---|
+| `ZYTE_API_KEY` | Scraper fallback for JS-heavy sites |
+| `EXA_API_KEY` | Required for X.com / Reddit URLs (they block direct scraping) |
+| `X_DAILY_ENABLED` · `X_WEEKLY_ENABLED` · `X_CONSUMER_KEY` · `X_CONSUMER_SECRET` · `X_ACCESS_TOKEN` · `X_ACCESS_TOKEN_SECRET` | Post reflections / digests to X (opt-in) |
+| `DHYAMA_BOT_TOKEN` · `DHYAMA_CHAT_ID` | Separate Telegram bot for startup + error + budget alerts |
+| `LLM_MONTHLY_USD_CAP` | Soft cap. At 90% you get a dhyama warning. Above 100%, non-digest calls degrade to `*_CHEAP` (digest is preserved) |
+
+---
+
+## How it works
+
+For curious humans and AI agents trying to extend or debug.
+
+### Architecture
+
+```
+Telegram                                                  GitHub (your private repo)
+    │                                                           ▲
+    │  webhook POST                                             │  PUT /contents
+    ▼                                                           │
+┌───────────────────┐   ┌───────────────────┐   ┌──────────────┴─────┐
+│ bot/webhook.py    │──▶│ PTB Application   │──▶│ bot/handlers.py    │
+│   (FastAPI)       │   │ (python-telegram- │   │   owner-gated,     │
+│   owner-gated     │   │  bot)             │   │   dispatches kind  │
+└───────────────────┘   └───────────────────┘   └──────┬─────────────┘
+                                                        │
+                           ┌────────────────────────────┼────────────────────────────┐
+                           ▼                            ▼                            ▼
+                    ┌─────────────┐             ┌──────────────┐           ┌──────────────┐
+                    │ ingest/     │             │ llm/ router  │           │ github_sync  │
+                    │   scraper   │             │   + budget   │           │   markdown   │
+                    │   routing   │             │   guard      │           │   render     │
+                    └─────┬───────┘             └──────┬───────┘           └──────┬───────┘
+                          │                            │                          │
+                          └──────────────┬─────────────┘                          │
+                                         ▼                                        │
+                                ┌────────────────┐                                │
+                                │ SQLite (WAL)   │◀───────────────────────────────┘
+                                │   captures     │
+                                │   captures_fts │   ← FTS5, powers /ask
+                                │   daily/weekly │
+                                │   llm_usage    │   ← budget ledger
+                                └────────────────┘
+                                         ▲
+                                         │
+                                ┌────────┴────────┐
+                                │  APScheduler    │
+                                │   process_      │
+                                │   pending (60s) │
+                                │   nightly_sync  │
+                                │   daily_prompt  │
+                                │   weekly_*      │
+                                └─────────────────┘
+```
+
+No external cron. Everything runs in the single Python process. Scheduler is APScheduler on asyncio. DB is a single aiosqlite connection in WAL mode.
+
+### Key files
+
+| Path | What lives there |
+|---|---|
+| `bot/main.py` | Entry point: polling vs webhook, signal handling, DB lifecycle |
+| `bot/bot_app.py` | Telegram Application builder, handler registration, config validation |
+| `bot/handlers.py` | Every `/command` + message-kind router. Owner gate is here. |
+| `bot/db.py` | Schema + migrations (`MIGRATIONS` list + `PRAGMA user_version`), insert/query helpers |
+| `bot/llm/` | Provider abstraction. `base.py` = types + timeout table. `anthropic.py` / `openai.py` = adapters with explicit prompt caching. `router.py` = per-purpose provider selection + budget-driven model degrade. `budget.py` = usage ledger + cap enforcement. |
+| `bot/ingest/` | Scraping pipeline. `router.py` classifies + dispatches. `generic.py` / `zyte.py` / `hn.py` / `exa.py` for URLs. `voice.py` / `vision.py` for media. |
+| `bot/process.py` | Post-ingest LLM call for title/tags/quotes/summary |
+| `bot/oracle.py` | `/ask` — query expansion, FTS5 retrieval, orchurator synthesis with `[N]` citations |
+| `bot/digest/` | Weekly pipeline. `weekly.py` = orchestrator. `validate.py` = quote-only + grapheme + whisper length. `fz_state.py` = cumulative fz.ax JSON builder. |
+| `bot/forget.py` | `/forget` cascade logic (SQLite + GitHub, handles why-siblings) |
+| `bot/tweet.py` | X posting (opt-in). `bot/scheduler.py` = all cron jobs. |
+| `bot/persona.py` · `bot/prompts.py` | The orchurator voice block and every SYSTEM_* prompt |
+| `bot/reflection.py` · `bot/why.py` | Pending-state machines in the `kv` table with atomic `DELETE ... RETURNING` consume |
+
+### Key invariants worth knowing
+
+- **User is always owner.** Every handler checks `TELEGRAM_OWNER_ID`. Non-owner chats are silently dropped.
+- **Captures are append-only by default.** Only `/forget` removes them.
+- **Dedupe by `(source, telegram_msg_id)`.** Telegram webhook retries won't create duplicates.
+- **Whys render inline inside their parent's `.md` file.** They have their own row in SQLite but no separate GitHub file.
+- **Quote-only enforcement is a normalized-substring check.** Case, punctuation, and whitespace are normalized; every sentence in the essay must be a substring of the combined corpus.
+- **Digest is idempotent per `fz_week_idx`.** Running twice in the same week is a no-op unless `force=True`.
+- **User-set marks (`/setmark`) survive digest runs.** The code preserves them via `user_mark_override`.
 
 ---
 
 ## Privacy warning
 
-**Your private GitHub repo is private from randoms, not end-to-end encrypted.** If you paste something sensitive into `to` (an API key in a text message, a URL with `user:pass@…` credentials, an embarrassing DM screenshot), it lands in SQLite AND gets pushed to GitHub in plaintext. A future repo leak or GitHub breach would expose it.
+**Your private GitHub repo is private from randoms, not end-to-end encrypted.** If you paste something sensitive into `to` — an API key in a text message, a URL with `user:pass@…` credentials, an embarrassing DM screenshot — it lands in SQLite AND gets pushed to GitHub in plaintext. A future repo leak or GitHub breach would expose it.
 
-Treat `to` like your notebook — some things don't belong in a notebook.
+Treat `to` like your notebook. Some things don't belong in a notebook.
+
+If you do paste something by accident: `/forget last` removes it from both sides within ~2 seconds.
 
 ---
 
 ## Development
 
 ```bash
+git clone git@github.com:momentmaker/to
+cd to
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m pytest tests/
+python -m pytest tests/          # 275 tests, runs in ~1s
 ```
 
-253 tests, runs in ~1s. Stages 1–7 cover the full pipeline; see `/Users/rubberduck/.claude/plans/idea-the-commonplace-gleaming-platypus.md` (local-only planning artifact) for the stage breakdown.
+For local testing:
+```bash
+MODE=polling SQLITE_PATH=./to.db python -m bot.main
+```
+
+No webhook needed in polling mode — the bot pulls updates directly from Telegram.
+
+### Running specific tests
+
+```bash
+python -m pytest tests/test_oracle.py -v            # just the Oracle
+python -m pytest tests/ -k "forget"                 # every /forget test
+python -m pytest tests/ -k "budget or guard"        # budget-related
+```
+
+### Adding a new feature
+
+Start in `bot/prompts.py` if you need a new SYSTEM prompt. Add a new `purpose` literal in `bot/llm/base.py`. Add a new handler in `bot/handlers.py`. Register it in `bot/bot_app.py`. Follow the test patterns in `tests/` — each bot module has a matching `test_*.py`.
+
+---
+
+## For AI agents setting this up
+
+If you're Claude Code, Cursor, Devin, or similar, here's the fastest path to a working deploy for a user:
+
+1. Ask the user for: their Telegram user id, their DOB (YYYY-MM-DD), their timezone (IANA — e.g. `America/Chicago` not `CST`), whether they want Anthropic only or Anthropic+OpenAI, whether they already have a GitHub repo for captures.
+2. Create both Telegram bots via @BotFather in their session and collect tokens.
+3. Help them generate the GitHub fine-grained PAT (they have to do this; you can't).
+4. Walk them through Coolify (or their chosen host) using the exact env block from step 5 of [Run it in 15 minutes](#run-it-in-15-minutes).
+5. Confirm the dhyama alerting bot received the `🟢 [to] bot started (webhook)` message before telling the user it's ready.
+6. First smoke test: have the user send a plain text line. Within 60 seconds the file should appear in their captures repo. Then try a URL to confirm the why flow.
+7. If the weekly reminder is what they want (default), tell them to look for the Saturday 22:00 ping and walk them through the Claude Code digest prompt from [The weekly ritual](#the-weekly-ritual).
+
+Common mistakes to catch:
+- `TIMEZONE` set to an abbreviation (`CST`, `PST`) — must be IANA.
+- `GITHUB_BRANCH` not matching the actual default (check the repo — `main` vs `master`).
+- Missing webhook secret — Telegram accepts without it but it's the only thing keeping rando bots from hitting the endpoint.
+- OpenAI key missing but user sends voice notes — Whisper needs it, every other path works on Anthropic alone.
 
 ---
 
 ## License
 
 MIT. See `LICENSE`.
+
+Contributions welcome, but this is designed as a single-user tool. Fork it and make it yours.
