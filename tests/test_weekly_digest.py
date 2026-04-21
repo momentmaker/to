@@ -306,10 +306,12 @@ async def test_weekly_digest_includes_why_replies_in_corpus(conn):
 
 
 @pytest.mark.asyncio
-async def test_export_uses_existing_sha_to_overwrite(conn):
-    """The FzState JSON push uses the sha stored in kv so the second export
-    updates (not duplicates) the file on GitHub."""
-    import json as _j
+async def test_export_pushes_fz_backup_via_probe_then_push(conn):
+    """Regression: fz-ax-backup.json push probes GitHub for the current sha
+    right before PUT instead of caching one. This is the file the user may
+    also edit (via a local Claude Code digest run), so a cached sha would
+    go stale and cause 409 conflicts on the bot's next push.
+    """
     await _insert_text_capture(
         conn, fz_week_idx=1888, raw="the only fragment",
     )
@@ -320,29 +322,21 @@ async def test_export_uses_existing_sha_to_overwrite(conn):
     bot = MagicMock(); bot.send_message = AsyncMock()
     settings = _settings(GITHUB_TOKEN="ghp_test", GITHUB_REPO="u/r")
 
-    # Pre-seed fz_backup_sha
-    await conn.execute(
-        """INSERT INTO kv (key, value, updated_at) VALUES ('fz_backup_sha', ?, ?)""",
-        (_j.dumps("old-sha"), "2026-04-21T00:00:00Z"),
-    )
-    await conn.commit()
-
-    put_calls: list[dict] = []
-    async def _fake_put(**kwargs):
-        put_calls.append(kwargs)
+    probe_and_push_calls: list[dict] = []
+    async def _fake_auto(**kwargs):
+        probe_and_push_calls.append(kwargs)
         return "new-sha"
-    with patch("bot.github_sync.put_file", AsyncMock(side_effect=_fake_put)), \
-         patch("bot.digest.weekly._put_with_auto_sha",
-               AsyncMock(return_value="digest-sha")):
+    with patch("bot.digest.weekly._put_with_auto_sha",
+               AsyncMock(side_effect=_fake_auto)):
         ok = await weekly.weekly_digest_job(
             conn=conn, settings=settings, providers=providers, bot=bot,
             fz_week=1888,
         )
     assert ok is True
-    # Find the fz-ax-backup.json push
-    fz_call = next((c for c in put_calls if c["path"] == "fz-ax-backup.json"), None)
-    assert fz_call is not None
-    assert fz_call["existing_sha"] == "old-sha"
+    # Both digest.md and fz-ax-backup.json go through _put_with_auto_sha.
+    paths = {c["path"] for c in probe_and_push_calls}
+    assert "fz-ax-backup.json" in paths
+    assert any("digest.md" in p for p in paths)
 
 
 @pytest.mark.asyncio
@@ -508,8 +502,9 @@ async def test_setmark_before_scheduler_does_not_block_digest(conn):
 
 
 @pytest.mark.asyncio
-async def test_export_stores_new_backup_sha_for_next_run(conn):
-    import json as _j
+async def test_export_stores_returned_sha_on_weekly_row(conn):
+    """`weekly.fz_export_sha` captures whatever GitHub returned from the
+    probe-then-push cycle for the record (not used as a cache anymore)."""
     await _insert_text_capture(
         conn, fz_week_idx=1888, raw="the only fragment",
     )
@@ -520,16 +515,14 @@ async def test_export_stores_new_backup_sha_for_next_run(conn):
     bot = MagicMock(); bot.send_message = AsyncMock()
     settings = _settings(GITHUB_TOKEN="ghp_test", GITHUB_REPO="u/r")
 
-    with patch("bot.github_sync.put_file", AsyncMock(return_value="returned-sha")), \
-         patch("bot.digest.weekly._put_with_auto_sha",
-               AsyncMock(return_value="digest-sha")):
+    with patch("bot.digest.weekly._put_with_auto_sha",
+               AsyncMock(return_value="returned-sha")):
         await weekly.weekly_digest_job(
             conn=conn, settings=settings, providers=providers, bot=bot,
             fz_week=1888,
         )
     async with conn.execute(
-        "SELECT value FROM kv WHERE key = 'fz_backup_sha'"
+        "SELECT fz_export_sha FROM weekly WHERE fz_week_idx = 1888",
     ) as cur:
         row = await cur.fetchone()
-    assert row is not None
-    assert _j.loads(row[0]) == "returned-sha"
+    assert row["fz_export_sha"] == "returned-sha"

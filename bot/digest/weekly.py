@@ -415,20 +415,20 @@ async def _push_weekly_artifacts(
     except Exception:
         log.exception("weekly_digest: digest.md push failed")
 
-    # 2. fz-ax-backup.json
+    # 2. fz-ax-backup.json — probe GitHub for the current sha before each
+    # push. This is the one file both the bot and the user might edit
+    # (e.g. the user running a local digest via Claude Code). Caching the
+    # sha locally would go stale and produce 409 conflicts on the next
+    # bot push; probing always reflects whatever is on GitHub right now.
     try:
         state = await fz_state.build_fz_state(conn=conn, settings=settings)
         serialized = fz_state.serialize(state)
-        # Use kv to track the single shared file's sha
-        prev_sha = await _get_kv_text(conn, "fz_backup_sha")
-        new_sha = await github_sync.put_file(
+        new_sha = await _put_with_auto_sha(
             settings=settings,
             path="fz-ax-backup.json",
             content=serialized,
             message=f"fz-ax: update through week {iso_week}",
-            existing_sha=prev_sha,
         )
-        await _set_kv_text(conn, "fz_backup_sha", new_sha)
         await conn.execute(
             "UPDATE weekly SET fz_export_sha = ? WHERE fz_week_idx = ?",
             (new_sha, fz_week),
@@ -482,24 +482,3 @@ def _render_digest_md(iso_week: str, clean: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-async def _get_kv_text(conn: aiosqlite.Connection, key: str) -> str | None:
-    async with conn.execute("SELECT value FROM kv WHERE key = ?", (key,)) as cur:
-        row = await cur.fetchone()
-    if row is None:
-        return None
-    try:
-        return json.loads(row[0]) if row[0] else None
-    except json.JSONDecodeError:
-        return None
-
-
-async def _set_kv_text(conn: aiosqlite.Connection, key: str, value: str) -> None:
-    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-    await conn.execute(
-        """
-        INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-        """,
-        (key, json.dumps(value), now_iso),
-    )
-    await conn.commit()
