@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -560,6 +561,133 @@ async def forget_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not result["github_deleted"] and github_sync.is_configured(settings):
         bits.append("  (github side not updated — check logs)")
     await update.message.reply_text("\n".join(bits))
+
+
+_WEEK_ARG_RE = re.compile(r"^\d{4}-w\d{2}$")
+
+
+async def tweetweekly_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/tweetweekly [YYYY-wNN] — fetch a digest.md from the captures repo and
+    post a tweet drawn from it. For users on the local-digest workflow who
+    also want the weekly tweet their server-side counterparts get for free.
+
+    Defaults to today's week. Requires X_WEEKLY_ENABLED + OAuth + GitHub sync.
+    """
+    if not await _ensure_owner(update, context):
+        return
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+    providers: Providers | None = context.bot_data.get("providers")
+
+    if not tweet_mod.is_configured_for_weekly(settings):
+        await update.message.reply_text(
+            "weekly tweet is not configured. "
+            "set X_WEEKLY_ENABLED=true and the four X_* OAuth creds."
+        )
+        return
+    if providers is None:
+        await update.message.reply_text("no LLM configured; cannot draft tweet.")
+        return
+    if not github_sync.is_configured(settings):
+        await update.message.reply_text(
+            "github is not configured; cannot fetch the digest."
+        )
+        return
+
+    dob = db.settings_dob(settings.DOB)
+    today = local_date_for(datetime.now(timezone.utc), settings.TIMEZONE)
+    current_iso_week = iso_week_key(today)
+
+    args = context.args or []
+    if args:
+        week_arg = args[0].strip().lower()
+        if not _WEEK_ARG_RE.match(week_arg):
+            await update.message.reply_text(
+                "usage: /tweetweekly [YYYY-wNN]   (e.g. 2026-w17)"
+            )
+            return
+        week_dir = week_arg
+        iso_week = week_arg.upper()
+    else:
+        iso_week = current_iso_week
+        week_dir = iso_week.replace("W", "w")
+
+    path = f"{week_dir}/digest.md"
+
+    try:
+        fetched = await github_sync.fetch_file(settings=settings, path=path)
+    except Exception:
+        log.exception("tweetweekly: fetch_file failed")
+        await update.message.reply_text(
+            "couldn't reach github to read the digest. check logs."
+        )
+        return
+    if fetched is None:
+        await update.message.reply_text(
+            f"no digest found at {path} — run `weekly_digest` locally first, "
+            f"then push."
+        )
+        return
+    content, _sha = fetched
+
+    parsed = tweet_mod.parse_digest_md(content)
+    if parsed is None:
+        await update.message.reply_text(
+            f"{path} exists but didn't parse as a digest. expected format:\n"
+            f"  # YYYY-WNN\n"
+            f"  \n"
+            f"  **<mark>**  _<whisper>_\n"
+            f"  \n"
+            f"  <essay>"
+        )
+        return
+
+    await update.message.reply_text("drafting tweet…")
+
+    tweet_text = await tweet_mod.generate_weekly_tweet(
+        mark=parsed["mark"],
+        whisper=parsed["whisper"],
+        essay=parsed["essay"],
+        settings=settings, providers=providers, conn=conn,
+    )
+    if not tweet_text:
+        await update.message.reply_text(
+            "tweet generation failed. try again or check logs."
+        )
+        return
+
+    result = await tweet_mod.post_tweet(tweet_text, settings=settings)
+    if result is None:
+        await update.message.reply_text("tweet post failed — check logs.")
+        return
+
+    # Backfill the weekly row for the current week only — past weeks need the
+    # right fz_week_idx, which we can't safely derive from iso_week alone.
+    if iso_week == current_iso_week:
+        try:
+            fz_week = fz_week_idx(today, dob)
+            now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+            await conn.execute(
+                """
+                INSERT INTO weekly (
+                    fz_week_idx, iso_week_key, essay, whisper, mark, marked_at,
+                    tweet_text, tweet_posted_at, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'processed')
+                ON CONFLICT(fz_week_idx) DO UPDATE SET
+                  essay = excluded.essay,
+                  whisper = excluded.whisper,
+                  mark = excluded.mark,
+                  tweet_text = excluded.tweet_text,
+                  tweet_posted_at = excluded.tweet_posted_at
+                """,
+                (fz_week, iso_week, parsed["essay"], parsed["whisper"], parsed["mark"],
+                 now_iso, tweet_text, now_iso),
+            )
+            await conn.commit()
+        except Exception:
+            log.exception("tweetweekly: weekly row backfill failed")
+
+    await update.message.reply_text(f"tweeted:\n{result.url}")
 
 
 async def ask_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):

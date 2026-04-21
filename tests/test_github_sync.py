@@ -149,6 +149,56 @@ async def test_github_sync_does_not_retry_on_4xx():
     assert attempts[0] == 1
 
 
+# ---- fetch_file -----------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fetch_file_returns_content_and_sha():
+    captured = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["method"] = request.method
+        captured["params"] = dict(request.url.params)
+        body = base64.b64encode("hello world".encode()).decode("ascii")
+        return httpx.Response(200, json={"content": body, "sha": "sha-xyz"})
+
+    transport = httpx.MockTransport(_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await github_sync.fetch_file(
+            settings=_settings(), path="2026-w17/digest.md", client=client,
+        )
+    assert result == ("hello world", "sha-xyz")
+    assert captured["method"] == "GET"
+    assert "/repos/user/to-commonplace/contents/2026-w17/digest.md" in captured["url"]
+    assert captured["params"] == {"ref": "main"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_file_returns_none_on_404():
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    transport = httpx.MockTransport(_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await github_sync.fetch_file(
+            settings=_settings(), path="missing.md", client=client,
+        )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_file_raises_on_auth_error():
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": "Bad credentials"})
+
+    transport = httpx.MockTransport(_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await github_sync.fetch_file(
+                settings=_settings(), path="x.md", client=client,
+            )
+
+
 # ---- push_capture (DB integration) ---------------------------------------
 
 @pytest.mark.asyncio

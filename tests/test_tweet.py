@@ -345,3 +345,267 @@ async def test_tweet_disabled_skips_api_call(conn, monkeypatch):
     ) as cur:
         row = await cur.fetchone()
     assert row["tweet_text"] is None
+
+
+# ---- parse_digest_md -----------------------------------------------------
+
+def test_parse_digest_md_happy_path():
+    md = (
+        "# 2026-W17\n"
+        "\n"
+        "**☲**  _a week of small ignitions_\n"
+        "\n"
+        "paragraph one\n"
+        "\n"
+        "paragraph two\n"
+    )
+    out = tweet_mod.parse_digest_md(md)
+    assert out == {
+        "iso_week": "2026-W17",
+        "mark": "☲",
+        "whisper": "a week of small ignitions",
+        "essay": "paragraph one\n\nparagraph two",
+    }
+
+
+def test_parse_digest_md_returns_none_on_empty_or_short():
+    assert tweet_mod.parse_digest_md("") is None
+    assert tweet_mod.parse_digest_md(None) is None  # type: ignore[arg-type]
+    assert tweet_mod.parse_digest_md("# 2026-W17\n") is None
+
+
+def test_parse_digest_md_returns_none_on_missing_week_header():
+    md = "not a header\n\n**x**  _y_\n\nessay\n"
+    assert tweet_mod.parse_digest_md(md) is None
+
+
+def test_parse_digest_md_returns_none_on_missing_mark_whisper_line():
+    md = "# 2026-W17\n\njust prose\n\nessay\n"
+    assert tweet_mod.parse_digest_md(md) is None
+
+
+def test_parse_digest_md_tolerates_multiple_blanks_before_mark():
+    md = "# 2026-W17\n\n\n\n**a**  _b_\n\nessay line\n"
+    out = tweet_mod.parse_digest_md(md)
+    assert out is not None
+    assert out["mark"] == "a"
+    assert out["essay"] == "essay line"
+
+
+# ---- /tweetweekly handler ------------------------------------------------
+
+def _tw_settings(**kw):
+    return _fully_configured(
+        DOB="1990-01-01", TIMEZONE="UTC",
+        GITHUB_TOKEN="ghp", GITHUB_REPO="u/r", GITHUB_BRANCH="main",
+        **kw,
+    )
+
+
+def _tw_update_context(*, settings, conn, providers, args=None):
+    update = MagicMock()
+    update.effective_user = MagicMock(); update.effective_user.id = 42
+    update.message = MagicMock()
+    update.message.reply_text = AsyncMock()
+
+    context = MagicMock()
+    context.bot_data = {"settings": settings, "db": conn, "providers": providers}
+    context.args = args or []
+    return update, context
+
+
+@pytest.mark.asyncio
+async def test_tweetweekly_rejects_when_weekly_disabled(conn):
+    from bot.handlers import tweetweekly_handler
+
+    settings = _settings(DOB="1990-01-01", TIMEZONE="UTC")  # X_WEEKLY_ENABLED=False
+    update, context = _tw_update_context(
+        settings=settings, conn=conn, providers=Providers(None, None),
+    )
+    await tweetweekly_handler(update, context)
+    update.message.reply_text.assert_awaited_once()
+    msg = update.message.reply_text.await_args.args[0]
+    assert "X_WEEKLY_ENABLED" in msg
+
+
+@pytest.mark.asyncio
+async def test_tweetweekly_rejects_when_github_not_configured(conn):
+    from bot.handlers import tweetweekly_handler
+
+    settings = _fully_configured(DOB="1990-01-01", TIMEZONE="UTC")  # no GITHUB_*
+    update, context = _tw_update_context(
+        settings=settings, conn=conn, providers=Providers(_SeqProv([]), None),
+    )
+    await tweetweekly_handler(update, context)
+    msg = update.message.reply_text.await_args.args[0]
+    assert "github" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_tweetweekly_rejects_bad_week_arg(conn, monkeypatch):
+    from bot import github_sync
+    from bot.handlers import tweetweekly_handler
+
+    settings = _tw_settings()
+    update, context = _tw_update_context(
+        settings=settings, conn=conn, providers=Providers(_SeqProv([]), None),
+        args=["not-a-week"],
+    )
+    # fetch_file should never be called
+    async def _fetch_shouldnt_run(**kwargs):
+        raise AssertionError("fetch_file should not be called on bad arg")
+    monkeypatch.setattr(github_sync, "fetch_file", _fetch_shouldnt_run)
+
+    await tweetweekly_handler(update, context)
+    msg = update.message.reply_text.await_args.args[0]
+    assert "usage" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_tweetweekly_handles_missing_digest(conn, monkeypatch):
+    from bot import github_sync
+    from bot.handlers import tweetweekly_handler
+
+    settings = _tw_settings()
+    update, context = _tw_update_context(
+        settings=settings, conn=conn, providers=Providers(_SeqProv([]), None),
+        args=["2026-w17"],
+    )
+
+    async def _fetch_none(**kwargs):
+        return None
+    monkeypatch.setattr(github_sync, "fetch_file", _fetch_none)
+
+    await tweetweekly_handler(update, context)
+    # last reply_text call gets the user-facing error
+    last = update.message.reply_text.await_args.args[0]
+    assert "no digest found" in last.lower()
+    assert "2026-w17/digest.md" in last
+
+
+@pytest.mark.asyncio
+async def test_tweetweekly_handles_unparseable_digest(conn, monkeypatch):
+    from bot import github_sync
+    from bot.handlers import tweetweekly_handler
+
+    settings = _tw_settings()
+    update, context = _tw_update_context(
+        settings=settings, conn=conn, providers=Providers(_SeqProv([]), None),
+        args=["2026-w17"],
+    )
+
+    async def _fetch_junk(**kwargs):
+        return ("random unparseable text\nno header\n", "sha")
+    monkeypatch.setattr(github_sync, "fetch_file", _fetch_junk)
+
+    await tweetweekly_handler(update, context)
+    last = update.message.reply_text.await_args.args[0]
+    assert "didn't parse" in last.lower()
+
+
+@pytest.mark.asyncio
+async def test_tweetweekly_happy_path_posts_and_backfills_current_week(
+    conn, monkeypatch,
+):
+    """Current-week digest → tweet drafted, posted, and weekly row upserted."""
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
+    from bot import github_sync
+    from bot.handlers import tweetweekly_handler
+    from bot.week import fz_week_idx, iso_week_key, local_date_for
+
+    settings = _tw_settings()
+
+    # Compute "current week" from the bot's perspective
+    today = local_date_for(_dt.now(tz=_tz.utc), "UTC")
+    current_iso = iso_week_key(today)  # e.g. "2026-W17"
+    current_dir = current_iso.replace("W", "w")
+
+    digest_md = (
+        f"# {current_iso}\n"
+        f"\n"
+        f"**☲**  _the week hummed_\n"
+        f"\n"
+        f"the essay body\n"
+    )
+
+    fetch_calls = []
+    async def _fetch(**kwargs):
+        fetch_calls.append(kwargs["path"])
+        return (digest_md, "sha-1")
+    monkeypatch.setattr(github_sync, "fetch_file", _fetch)
+
+    prov = _SeqProv(['{"tweet": "short and true"}'])
+    providers = Providers(prov, None)
+
+    async def _fake_post(text, *, settings):
+        return tweet_mod.TweetResult(id="9", url="https://x.com/i/web/status/9")
+    monkeypatch.setattr(tweet_mod, "post_tweet", _fake_post)
+
+    update, context = _tw_update_context(
+        settings=settings, conn=conn, providers=providers,
+    )
+    await tweetweekly_handler(update, context)
+
+    assert fetch_calls == [f"{current_dir}/digest.md"]
+    # Final reply includes the tweet URL
+    last = update.message.reply_text.await_args.args[0]
+    assert "https://x.com/i/web/status/9" in last
+
+    # Weekly row backfilled for current week
+    from datetime import date as _d
+    dob = _d(1990, 1, 1)
+    fz = fz_week_idx(today, dob)
+    async with conn.execute(
+        "SELECT mark, whisper, essay, tweet_text, tweet_posted_at FROM weekly "
+        "WHERE fz_week_idx = ?", (fz,),
+    ) as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    assert row["mark"] == "☲"
+    assert row["whisper"] == "the week hummed"
+    assert "the essay body" in row["essay"]
+    assert row["tweet_text"] == "short and true"
+    assert row["tweet_posted_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_tweetweekly_past_week_does_not_backfill_weekly_row(
+    conn, monkeypatch,
+):
+    """Posting for a non-current week should skip the backfill (no fz_week_idx
+    derivable safely).
+    """
+    from bot import github_sync
+    from bot.handlers import tweetweekly_handler
+
+    settings = _tw_settings()
+
+    digest_md = (
+        "# 2020-W01\n"
+        "\n"
+        "**a**  _b_\n"
+        "\n"
+        "c\n"
+    )
+
+    async def _fetch(**kwargs):
+        return (digest_md, "sha")
+    monkeypatch.setattr(github_sync, "fetch_file", _fetch)
+
+    prov = _SeqProv(['{"tweet": "ok"}'])
+    providers = Providers(prov, None)
+
+    async def _fake_post(text, *, settings):
+        return tweet_mod.TweetResult(id="1", url="https://x.com/i/web/status/1")
+    monkeypatch.setattr(tweet_mod, "post_tweet", _fake_post)
+
+    update, context = _tw_update_context(
+        settings=settings, conn=conn, providers=providers,
+        args=["2020-w01"],
+    )
+    await tweetweekly_handler(update, context)
+
+    async with conn.execute("SELECT COUNT(*) FROM weekly") as cur:
+        (count,) = await cur.fetchone()
+    assert count == 0

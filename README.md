@@ -203,6 +203,7 @@ Then send anything — a line you overheard, a link, a photo of a book page, a v
 | `/setmark <glyph>` | Override the current week's mark (one emoji or character) |
 | `/setvow <text>` | Pin the line you want above the year in fz.ax |
 | `/export` | Force the weekly digest + fz.ax backup to regenerate now (opt-in cron; this always works regardless) |
+| `/tweetweekly [YYYY-wNN]` | Read `<week>/digest.md` from the captures repo and post a ≤260-char tweet drawn from it. Defaults to the current week. Use this if you run the digest locally — the auto-tweet only fires when the bot runs the digest itself |
 
 ---
 

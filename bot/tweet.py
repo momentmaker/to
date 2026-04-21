@@ -113,6 +113,47 @@ async def generate_daily_tweet(
     return truncate_tweet(_coerce_tweet_text(response.text))
 
 
+_DIGEST_WEEK_RE = re.compile(r"^#\s+(\S+)")
+_DIGEST_MARK_WHISPER_RE = re.compile(r"^\*\*(.+?)\*\*\s+_(.+?)_\s*$")
+
+
+def parse_digest_md(text: str) -> dict | None:
+    """Parse the digest.md format produced by both the bot and the local CLI:
+
+        # 2026-W17
+
+        **☲**  _a week of small ignitions_
+
+        <essay>
+
+    Returns {iso_week, mark, whisper, essay} or None if the format is off.
+    """
+    if not text:
+        return None
+    lines = text.splitlines()
+    if len(lines) < 3:
+        return None
+    m_week = _DIGEST_WEEK_RE.match(lines[0])
+    if not m_week:
+        return None
+    # Find the mark/whisper line, skipping blanks.
+    idx = 1
+    while idx < len(lines) and not lines[idx].strip():
+        idx += 1
+    if idx >= len(lines):
+        return None
+    m_mw = _DIGEST_MARK_WHISPER_RE.match(lines[idx])
+    if not m_mw:
+        return None
+    essay = "\n".join(lines[idx + 1:]).strip()
+    return {
+        "iso_week": m_week.group(1),
+        "mark": m_mw.group(1),
+        "whisper": m_mw.group(2),
+        "essay": essay,
+    }
+
+
 async def generate_weekly_tweet(
     *,
     mark: str,

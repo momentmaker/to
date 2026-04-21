@@ -45,6 +45,38 @@ def _headers(settings: Settings) -> dict[str, str]:
     }
 
 
+async def fetch_file(
+    *,
+    settings: Settings,
+    path: str,
+    client: httpx.AsyncClient | None = None,
+) -> tuple[str, str] | None:
+    """GET a file from the repo. Returns (utf-8 content, sha) or None on 404.
+
+    Raises on auth/repo errors so callers don't confuse them with "not found".
+    """
+    owner_repo = settings.GITHUB_REPO
+    url = f"{_API_BASE}/repos/{owner_repo}/contents/{path}"
+    owned = client is None
+    if owned:
+        client = httpx.AsyncClient(timeout=_TIMEOUT)
+    try:
+        resp = await client.get(
+            url,
+            headers=_headers(settings),
+            params={"ref": settings.GITHUB_BRANCH},
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        data = resp.json()
+        content = base64.b64decode(data["content"]).decode("utf-8")
+        return content, str(data["sha"])
+    finally:
+        if owned:
+            await client.aclose()
+
+
 async def delete_file(
     *,
     settings: Settings,
