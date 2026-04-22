@@ -165,17 +165,17 @@ async def fetch_tweet(
         instances = [i.strip() for i in instances.split(",") if i.strip()]
     if not instances:
         return None
+    # _rewrite_to_nitter only inspects the input URL's host — if it rejects
+    # the URL for one instance, it rejects it for all. Check once up front.
     if _rewrite_to_nitter(x_url, instances[0]) is None:
-        return None  # not an X URL
+        return None
 
     owned = client is None
     if owned:
         client = httpx.AsyncClient(timeout=_TIMEOUT)
     try:
         for instance in instances:
-            nitter_url = _rewrite_to_nitter(x_url, instance)
-            if nitter_url is None:
-                continue
+            nitter_url = f"https://{instance}{urlparse(x_url).path or '/'}"
 
             html = await _fetch_direct(nitter_url, client)
             via = "direct"
@@ -195,7 +195,7 @@ async def fetch_tweet(
                 url=x_url,
                 author=_extract_author(html),
                 text=text,
-                via=via if via == "direct" else f"zyte:{instance}",
+                via=via,
             )
         return None
     finally:

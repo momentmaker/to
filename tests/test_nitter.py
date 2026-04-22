@@ -49,6 +49,20 @@ def test_extract_returns_empty_on_missing():
     assert nitter._extract_text("<html><body>nothing useful</body></html>") == ""
 
 
+def test_extract_author_pulls_from_og_title():
+    html = '<meta property="og:title" content="notthreadguy (@notthreadguy) / Twitter">'
+    assert nitter._extract_author(html) == "notthreadguy (@notthreadguy) / Twitter"
+
+
+def test_extract_author_returns_none_when_missing():
+    assert nitter._extract_author("<html><body>no og:title</body></html>") is None
+
+
+def test_extract_author_unescapes_entities():
+    html = '<meta property="og:title" content="Ben &amp; Jerry (@bj)">'
+    assert nitter._extract_author(html) == "Ben & Jerry (@bj)"
+
+
 def test_is_anubis_challenge_detected():
     anubis_html = """
     <title>Making sure you're not a bot!</title>
