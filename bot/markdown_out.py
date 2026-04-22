@@ -136,6 +136,14 @@ def render_capture_markdown(
     if isinstance(tags, list) and tags:
         fm["tags"] = [str(t) for t in tags if str(t)]
 
+    # Surface scrape failures in the frontmatter so you can diagnose thin
+    # captures (e.g. "bare URL with no body") from the .md file alone,
+    # without SSH-ing into the server and poking SQLite.
+    payload = _parse_json(_row_get(row, "payload")) or {}
+    scrape_error = payload.get("scrape_error")
+    if isinstance(scrape_error, str) and scrape_error.strip():
+        fm["scrape_error"] = scrape_error.strip()
+
     frontmatter = "+++\n" + tomli_w.dumps(fm) + "+++\n"
 
     body_parts: list[str] = []

@@ -90,6 +90,36 @@ async def test_markdown_frontmatter_includes_telegram_msg_id_when_present(conn):
 
 
 @pytest.mark.asyncio
+async def test_markdown_frontmatter_surfaces_scrape_error(conn):
+    """When a URL scrape fails silently (bare-URL body, no quotes/summary),
+    the error string from payload.scrape_error should show up in the
+    frontmatter so the .md file alone tells you why the capture is thin.
+    Without this, you'd have to SSH into the server and query SQLite.
+    """
+    row = await _insert(
+        conn, kind="url", url="https://x.com/u/status/1",
+        payload={"scrape": {"source": "x"}, "scrape_error": "exa returned no content"},
+    )
+    out = render_capture_markdown(row)
+    fm_end = out.index("\n+++\n", 3)
+    meta = tomllib.loads(out[4:fm_end + 1])
+    assert meta["scrape_error"] == "exa returned no content"
+
+
+@pytest.mark.asyncio
+async def test_markdown_frontmatter_omits_scrape_error_when_clean(conn):
+    """Successful captures shouldn't carry a scrape_error field at all."""
+    row = await _insert(
+        conn, kind="url", url="https://x.com/u/status/1",
+        payload={"scrape": {"source": "x", "text": "ok"}},
+    )
+    out = render_capture_markdown(row)
+    fm_end = out.index("\n+++\n", 3)
+    meta = tomllib.loads(out[4:fm_end + 1])
+    assert "scrape_error" not in meta
+
+
+@pytest.mark.asyncio
 async def test_markdown_frontmatter_omits_telegram_msg_id_when_absent(conn):
     """Captures without a telegram_msg_id (e.g. scheduled-generated rows)
     shouldn't have the field at all."""
