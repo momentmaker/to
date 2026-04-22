@@ -4,13 +4,15 @@ X and Reddit block scraping heavily. Exa's /contents endpoint returns the
 page's extracted text without us needing to solve their bot defenses.
 
   https://docs.exa.ai/reference/get-contents
-  POST https://api.exa.ai/contents  {ids: [url], text: true, livecrawl: "fallback"}
+  POST https://api.exa.ai/contents  {ids: [url], text: true, livecrawl: "always"}
 
-`livecrawl: "fallback"` is the important bit — without it, Exa returns only
-pages it has already crawled, which misses most fresh tweets. With
-"fallback", Exa uses the cache if a page is indexed and fetches live
-otherwise. Higher per-request cost than cache-only, but the alternative is
-empty results on freshly-posted content.
+`livecrawl: "always"` + `livecrawlTimeout: 10000` is what makes fresh
+tweets work. "fallback" falls back to cache when live fails silently,
+and "fallback" from-no-cache-to-failed-livecrawl returns an empty
+result. "always" forces a fresh fetch every time and the longer timeout
+gives Exa enough runway to crawl. Higher per-request cost than
+cache-only, but the alternative is empty results on freshly-posted
+content.
 """
 
 from __future__ import annotations
@@ -45,7 +47,12 @@ async def fetch_content(
     try:
         resp = await client.post(
             _EXA_URL,
-            json={"ids": [url], "text": True, "livecrawl": "fallback"},
+            json={
+                "ids": [url],
+                "text": True,
+                "livecrawl": "always",
+                "livecrawlTimeout": 10000,
+            },
             headers={"x-api-key": api_key, "Content-Type": "application/json"},
         )
         resp.raise_for_status()

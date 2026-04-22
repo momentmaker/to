@@ -144,10 +144,12 @@ async def test_exa_fetch_returns_text_content():
     assert captured["url"] == "https://api.exa.ai/contents"
     assert captured["x_api_key"] == "K"
     assert "x.com/u/status/1" in captured["body"]
-    # livecrawl: "fallback" forces Exa to fetch live when the page isn't
-    # already in their index — otherwise fresh tweets return empty.
+    # livecrawl: "always" + livecrawlTimeout forces Exa to fetch live every
+    # time — otherwise fresh tweets return empty even with "fallback" since
+    # X blocks Exa's crawlers aggressively.
     assert '"livecrawl"' in captured["body"]
-    assert '"fallback"' in captured["body"]
+    assert '"always"' in captured["body"]
+    assert '"livecrawlTimeout"' in captured["body"]
 
 
 @pytest.mark.asyncio
