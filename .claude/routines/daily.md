@@ -33,7 +33,7 @@ In the cloud environment settings (claude.ai/code/routines → your routine → 
 |---|---|---|
 | `CAPTURES_REPO` | `youruser/self` | Your private captures repo (`owner/repo` format) |
 | `CAPTURES_BRANCH` | `master` | Branch the bot writes to |
-| `CAPTURES_TZ` | `Asia/Tokyo` | IANA zone for "yesterday" boundary |
+| `CAPTURES_TZ` | `America/Chicago` | IANA zone for "yesterday" boundary — must match your bot's `TIMEZONE` so `local_date` values align |
 
 `GITHUB_TOKEN` is provided automatically via the GitHub App if you set it up during `/schedule` onboarding. If not, add it as an env var with `contents:write` scope on the captures repo.
 
@@ -61,7 +61,7 @@ the "don't perform wisdom" rule.
 Read from env vars:
 - CAPTURES_REPO      (e.g. "user/self")
 - CAPTURES_BRANCH    (e.g. "master")
-- CAPTURES_TZ        (IANA zone, e.g. "Asia/Tokyo")
+- CAPTURES_TZ        (IANA zone, e.g. "America/Chicago" — MUST match the bot's TIMEZONE)
 
 The GitHub App (or GITHUB_TOKEN env) gives you read+write on CAPTURES_REPO.
 
