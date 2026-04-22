@@ -283,6 +283,19 @@ makes the cron generate the digest server-side every Saturday. `/export` still w
 
 ---
 
+## Daily Routine (cloud-hosted, optional)
+
+A Claude Code [Routine](https://code.claude.com/docs/en/routines) you can schedule once. Runs on Anthropic's infra (laptop can be closed), writes two artifacts to your captures repo each morning:
+
+- **`sparks.md`** — one verbatim line per day, the sharpest line from yesterday's captures. Append-only. A year-long artifact you can skim in two minutes at any point.
+- **`YYYY-wNN/YYYY-MM-DD-echo.md`** — *only when yesterday's captures echo something from your past corpus*. Silent on ordinary days.
+
+Setup: paste `.claude/routines/daily.md` into the `/schedule` command. ~$0.15–$0.60/month of token allowance from your Claude Code subscription — no separate API key. Does NOT replace the weekly digest; it's a complementary "ambient noticing" layer that the bot can't do on its own (the server-side daily prompt is single-day-scoped).
+
+See [`.claude/routines/daily.md`](.claude/routines/daily.md) for the full prompt + env var setup.
+
+---
+
 ## Configuration
 
 ### Required
