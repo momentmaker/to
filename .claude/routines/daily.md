@@ -11,7 +11,20 @@ Runs on Anthropic infra, so your laptop can be closed. Uses your Claude Code sub
 
 ## Setup
 
-### 1. Install
+### 1. Install the Claude Code GitHub App on the captures-repo account
+
+**This is the gotcha that will bite you if you skip it.** Routines run in Anthropic's cloud VM and reach your captures repo through the Claude Code GitHub App. The App must be installed on the **account that owns the captures repo**, not just the account you log into Claude Code with.
+
+- If your captures repo lives at `myuser/self`, the App must be installed on `myuser`.
+- If your Claude Code login and your captures-repo account are the same, you only install once.
+- If they're different accounts (very common: a separate "personal" GitHub for captures), you need to log into that account on GitHub and install the App there too.
+- If the captures repo is in an org, install the App on the org and grant it access to just that repo.
+
+To install: log into the right GitHub account, open **https://github.com/apps** → search "Claude" → **Install**. Grant it access to only the captures repo (`Only select repositories` → pick `self` or whatever you named it).
+
+Signs you skipped this step: when you run the trigger, you'll get `github_repo_access_denied: GitHub repository access check failed — re-authorize GitHub in settings`.
+
+### 2. Create the trigger
 
 In Claude Code (from anywhere — `/schedule` is global, not repo-scoped), run:
 
@@ -21,28 +34,34 @@ In Claude Code (from anywhere — `/schedule` is global, not repo-scoped), run:
 
 When prompted for the routine content, paste the block labeled **"Routine prompt"** below. Set:
 
-- **Schedule**: `0 7 * * *` (07:00 UTC daily — adjust for your timezone)
+- **Schedule**: `0 12 * * *` (12:00 UTC daily — adjust for your timezone; 12:00 UTC = 07:00 CDT / 06:00 CST)
 - **Name**: `to-daily`
 - **Description**: `daily echo + sparks for the to commonplace bot`
+- **Repo source**: your captures repo (`myuser/self`)
+- **Model**: `claude-sonnet-4-6`
 
-### 2. Environment variables
+### 3. Substitute the per-user values
 
-In the cloud environment settings (claude.ai/code/routines → your routine → Environment), add:
+The Routine prompt below uses three per-user constants. The simplest path is to **bake them directly into the prompt** before pasting — do find+replace on these three tokens:
 
-| Var | Example | What |
+- `$CAPTURES_REPO` → your `owner/repo` (e.g. `myuser/self`)
+- `$CAPTURES_BRANCH` → your branch (e.g. `master` or `main`)
+- `$CAPTURES_TZ` → your IANA zone (e.g. `America/Chicago`)
+
+| Constant | Example | What |
 |---|---|---|
-| `CAPTURES_REPO` | `youruser/self` | Your private captures repo (`owner/repo` format) |
+| `CAPTURES_REPO` | `myuser/self` | Your private captures repo (`owner/repo` format) |
 | `CAPTURES_BRANCH` | `master` | Branch the bot writes to |
-| `CAPTURES_TZ` | `America/Chicago` | IANA zone for "yesterday" boundary — must match your bot's `TIMEZONE` so `local_date` values align |
+| `CAPTURES_TZ` | `America/Chicago` | IANA zone for "yesterday" boundary — **must match your bot's `TIMEZONE`** so `local_date` values align |
 
-`GITHUB_TOKEN` is provided automatically via the GitHub App if you set it up during `/schedule` onboarding. If not, add it as an env var with `contents:write` scope on the captures repo.
+If your Claude Code cloud environment supports env vars (check the Environments UI — currently flaky in preview), you can also set these as env vars and keep the prompt unchanged. Baking the values in is more reliable today.
 
-### 3. Test once
+### 4. Test once
 
 Before the first scheduled fire, run the Routine manually from the web UI to confirm auth and the code path. The first run on a day with captures should produce:
 
 - A new line at the bottom of `sparks.md`
-- Maybe a `YYYY-wNN/YYYY-MM-DD-echo.md` if there's an echo
+- Maybe a `YYYY-wNN/YYYY-MM-DD-echo.md` if there's an echo — **but echoes require at least one previous week of captures to rhyme against**, so your very first real run will likely skip the echo file. That's correct behavior, not a bug.
 
 ---
 
