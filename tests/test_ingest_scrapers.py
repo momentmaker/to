@@ -144,12 +144,6 @@ async def test_exa_fetch_returns_text_content():
     assert captured["url"] == "https://api.exa.ai/contents"
     assert captured["x_api_key"] == "K"
     assert "x.com/u/status/1" in captured["body"]
-    # livecrawl: "always" + livecrawlTimeout forces Exa to fetch live every
-    # time — otherwise fresh tweets return empty even with "fallback" since
-    # X blocks Exa's crawlers aggressively.
-    assert '"livecrawl"' in captured["body"]
-    assert '"always"' in captured["body"]
-    assert '"livecrawlTimeout"' in captured["body"]
 
 
 @pytest.mark.asyncio
@@ -193,30 +187,60 @@ async def test_scrape_url_routes_hn_to_hn_scraper():
 
 
 @pytest.mark.asyncio
-async def test_scrape_url_routes_x_and_reddit_via_exa():
-    fake_ec = exa.ExaContent(url="https://x.com/u/status/1", title="t", author="u", text="body")
-    with patch("bot.ingest.router.exa.fetch_content", AsyncMock(return_value=fake_ec)) as m:
-        result = await scrape_url(
-            "https://x.com/u/status/1", settings=_settings(EXA_API_KEY="K"),
-        )
-    assert result.source == "x"
-    assert result.content.startswith("t\n\nbody")
-    m.assert_awaited_once()
-
+async def test_scrape_url_routes_reddit_via_exa():
+    fake_ec = exa.ExaContent(url="https://reddit.com/r/foo", title="t", author="u", text="body")
     with patch("bot.ingest.router.exa.fetch_content", AsyncMock(return_value=fake_ec)) as m:
         result = await scrape_url(
             "https://reddit.com/r/foo", settings=_settings(EXA_API_KEY="K"),
         )
     assert result.source == "reddit"
+    assert result.content.startswith("t\n\nbody")
     m.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_scrape_url_x_without_exa_key_returns_error():
-    result = await scrape_url("https://x.com/u/status/1", settings=_settings())
+async def test_scrape_url_x_routes_through_nitter():
+    """X URLs go through Nitter (not Exa); Exa must not be called."""
+    from bot.ingest import nitter as nitter_mod
+    fake_tweet = nitter_mod.TweetContent(
+        url="https://x.com/u/status/1", author="u",
+        text="the tweet body", via="zyte:nitter.tiekoetter.com",
+    )
+    exa_mock = AsyncMock()
+    with patch("bot.ingest.router.nitter.fetch_tweet", AsyncMock(return_value=fake_tweet)) as nm, \
+         patch("bot.ingest.router.exa.fetch_content", exa_mock):
+        result = await scrape_url(
+            "https://x.com/u/status/1", settings=_settings(ZYTE_API_KEY="K"),
+        )
+    nm.assert_awaited_once()
+    exa_mock.assert_not_awaited()
     assert result.source == "x"
-    assert result.error and "EXA_API_KEY" in result.error
+    assert result.error is None
+    assert "the tweet body" in result.content
+    assert result.payload["text"] == "the tweet body"
+    assert result.payload["via"].startswith("zyte:")
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_x_degrades_gracefully_when_nitter_fails():
+    """If both direct httpx and Zyte fail, we return a bare-URL capture
+    with a helpful message about the copy-paste workflow."""
+    with patch("bot.ingest.router.nitter.fetch_tweet", AsyncMock(return_value=None)):
+        result = await scrape_url(
+            "https://x.com/u/status/1", settings=_settings(ZYTE_API_KEY="K"),
+        )
+    assert result.source == "x"
     assert result.content == "https://x.com/u/status/1"
+    assert result.error is not None
+    assert "paste" in result.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_reddit_without_exa_key_returns_error():
+    result = await scrape_url("https://reddit.com/r/foo", settings=_settings())
+    assert result.source == "reddit"
+    assert result.error and "EXA_API_KEY" in result.error
+    assert result.content == "https://reddit.com/r/foo"
 
 
 @pytest.mark.asyncio

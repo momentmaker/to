@@ -39,6 +39,12 @@ class Settings(BaseSettings):
 
     ZYTE_API_KEY: str = ""
     EXA_API_KEY: str = ""
+    # X/Twitter URLs route through Nitter (via Zyte for the Anubis PoW).
+    # Comma-separated list — tried in order, first one that serves content
+    # wins. Survives individual instances going down without a redeploy.
+    # If all listed instances fail, run scripts/zyte_nitter_probe.py to
+    # find live ones and update this env var.
+    NITTER_INSTANCES: str = "nitter.tiekoetter.com,nitter.cz,nitter.net,nitter.privacydev.net"
 
     DAILY_PROMPT_LOCAL_TIME: str = "21:30"
     WEEKLY_DIGEST_ENABLED: bool = False

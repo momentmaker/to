@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from bot.config import Settings
-from bot.ingest import exa, generic, hn, zyte
+from bot.ingest import exa, generic, hn, nitter, zyte
 from bot.ingest.urls import classify_url, extract_url
 
 log = logging.getLogger(__name__)
@@ -57,7 +57,36 @@ async def scrape_url(url: str, *, settings: Settings) -> UrlScrapeResult:
             source="hn", payload={}, content=url, error="hn fetch failed",
         )
 
-    if kind in ("reddit", "x"):
+    if kind == "x":
+        # X blocks its own API on the free tier and blocks Exa's crawler.
+        # Nitter (via Zyte for Anubis PoW when needed) is the reliable
+        # path — free httpx first, Zyte only on challenge.
+        tweet = await nitter.fetch_tweet(
+            url,
+            instances=settings.NITTER_INSTANCES,
+            zyte_api_key=settings.ZYTE_API_KEY,
+        )
+        if tweet is None:
+            return UrlScrapeResult(
+                source="x", payload={}, content=url,
+                error=(
+                    "nitter fetch failed (instance down / PoW unsolvable / tweet "
+                    "inaccessible). paste the tweet text as a regular message "
+                    "if you want the content; reply with /highlight to link it."
+                ),
+            )
+        return UrlScrapeResult(
+            source="x",
+            payload={
+                "title": tweet.author,
+                "author": tweet.author,
+                "text": tweet.text,
+                "via": tweet.via,
+            },
+            content=(f"{tweet.author}\n\n{tweet.text}" if tweet.author else tweet.text),
+        )
+
+    if kind == "reddit":
         if not settings.EXA_API_KEY:
             return UrlScrapeResult(
                 source=kind, payload={}, content=url, error="EXA_API_KEY not configured",
