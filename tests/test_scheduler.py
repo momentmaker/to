@@ -51,15 +51,40 @@ async def test_process_pending_reruns_stale_pending_captures(conn):
     providers = Providers(
         _FakeProv('{"title":"t","tags":["a"],"quotes":[],"summary":"s"}'), None,
     )
-    count = await sched_mod.process_pending(
-        conn=conn, settings=_settings(), providers=providers,
-    )
+    with patch("bot.github_sync.push_capture", AsyncMock(return_value=True)):
+        count = await sched_mod.process_pending(
+            conn=conn, settings=_settings(), providers=providers,
+        )
     assert count == 1
 
     async with conn.execute("SELECT status, processed FROM captures WHERE id = ?", (cid,)) as cur:
         row = await cur.fetchone()
     assert row["status"] == "processed"
     assert '"title":' in row["processed"]
+
+
+@pytest.mark.asyncio
+async def test_process_pending_pushes_to_github_after_processing(conn):
+    """Regression: process_pending must push to GitHub on success. Without
+    it, captures rescued by this job wait for nightly_sync instead of
+    landing in the repo promptly.
+    """
+    past = datetime(2020, 1, 1, 12, 0, tzinfo=timezone.utc)
+    cid = await db_mod.insert_capture(
+        conn, kind="text", raw="a line",
+        dob=date(1990, 1, 1), tz_name="UTC", created_at=past,
+    )
+    providers = Providers(
+        _FakeProv('{"title":"t","tags":[],"quotes":[],"summary":""}'), None,
+    )
+    push_mock = AsyncMock(return_value=True)
+    with patch("bot.github_sync.push_capture", push_mock):
+        await sched_mod.process_pending(
+            conn=conn, settings=_settings(), providers=providers,
+        )
+    push_mock.assert_awaited_once()
+    # Called with the capture id we expect
+    assert push_mock.await_args.args[0] == cid
 
 
 @pytest.mark.asyncio
@@ -134,9 +159,10 @@ async def test_process_pending_uses_scraped_text_from_payload(conn):
             )
     providers = Providers(_Spy(), None)
 
-    await sched_mod.process_pending(
-        conn=conn, settings=_settings(), providers=providers,
-    )
+    with patch("bot.github_sync.push_capture", AsyncMock(return_value=True)):
+        await sched_mod.process_pending(
+            conn=conn, settings=_settings(), providers=providers,
+        )
 
     assert seen_content and "extracted body" in seen_content[0]
     assert "A Piece" in seen_content[0]

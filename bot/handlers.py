@@ -392,6 +392,12 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 db_conn=conn,
             )
         )
+    elif github_sync.is_configured(settings):
+        # Scrape failed or content is unprocessable (e.g. bare URL). We still
+        # want the capture to land in the repo — don't wait for nightly_sync.
+        asyncio.create_task(
+            _push_to_github(capture_id=capture_id, settings=settings, conn=conn)
+        )
 
     # Kick off the capture-time "why?" for URLs only.
     if kind == "url" and url is not None and providers is not None:
@@ -638,19 +644,20 @@ async def highlight_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Push through the parent so the updated markdown lands in GitHub.
     if github_sync.is_configured(settings):
         asyncio.create_task(
-            _push_highlight_to_github(
-                capture_id=capture_id, settings=settings, conn=conn,
-            )
+            _push_to_github(capture_id=capture_id, settings=settings, conn=conn)
         )
 
 
-async def _push_highlight_to_github(
+async def _push_to_github(
     *, capture_id: int, settings: Settings, conn,
 ) -> None:
+    """Push-only task. For captures that either skip LLM processing (bare
+    URLs, empty content) or are children of a parent (highlights route
+    through their parent's markdown via push_capture)."""
     try:
         await github_sync.push_capture(capture_id, settings=settings, conn=conn)
     except Exception:
-        log.exception("highlight push to github failed for capture %s", capture_id)
+        log.exception("push_to_github failed for capture %s", capture_id)
 
 
 _WEEK_ARG_RE = re.compile(r"^\d{4}-w\d{2}$")

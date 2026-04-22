@@ -43,7 +43,9 @@ async def fetch_html_via_zyte(
         html = data.get("browserHtml")
         return html if html else None
     except Exception as e:
-        log.warning("zyte fetch failed for %s: %s", url, e)
+        # Some exception types (httpx.TimeoutException, bare transport errors)
+        # stringify to empty — include the class name so the log is actionable.
+        log.warning("zyte fetch failed for %s: %s: %s", url, type(e).__name__, e)
         return None
     finally:
         if owned:

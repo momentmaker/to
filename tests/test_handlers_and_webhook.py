@@ -441,6 +441,71 @@ async def test_text_message_handler_skips_llm_when_scrape_fails_and_content_is_j
 
 
 @pytest.mark.asyncio
+async def test_text_message_handler_pushes_to_github_when_llm_skipped(conn):
+    """Regression: when the scrape fails and LLM processing is skipped, the
+    capture still needs to reach the GitHub repo — otherwise it sits in
+    SQLite until nightly_sync, which is hours away.
+    """
+    import asyncio as _asyncio
+    from unittest.mock import AsyncMock, patch
+    from bot.handlers import text_message_handler
+    from bot.config import Settings
+    from bot.ingest.router import UrlScrapeResult
+    from bot.llm.router import Providers
+
+    settings = Settings(
+        TELEGRAM_OWNER_ID=42, DOB="1990-01-01", TIMEZONE="UTC",
+        ANTHROPIC_API_KEY="k",
+        GITHUB_TOKEN="ghp_x", GITHUB_REPO="u/r", GITHUB_BRANCH="main",
+    )
+
+    class _Prov:
+        name = "anthropic"
+        async def chat(self, **kwargs):
+            from bot.llm.base import LlmResponse
+            return LlmResponse(
+                text='one short line.', model="m", provider="anthropic",
+                input_tokens=1, output_tokens=1,
+            )
+    providers = Providers(_Prov(), None)
+
+    failed_scrape = UrlScrapeResult(
+        source="article", payload={},
+        content="https://example.com/dead", error="DNS fail",
+    )
+
+    update = MagicMock()
+    update.effective_user = MagicMock(); update.effective_user.id = 42
+    update.message = MagicMock()
+    update.message.text = "https://example.com/dead"
+    update.message.message_id = 9601
+    update.message.forward_origin = None
+    update.message.chat = MagicMock(); update.message.chat.type = "private"
+    update.message.chat.id = 99
+    update.message.reply_text = AsyncMock()
+
+    context = MagicMock()
+    context.bot = MagicMock(); context.bot.send_message = AsyncMock()
+    context.bot_data = {"settings": settings, "db": conn, "providers": providers}
+
+    push_mock = AsyncMock(return_value=True)
+    with patch("bot.handlers.scrape_url", AsyncMock(return_value=failed_scrape)), \
+         patch("bot.github_sync.push_capture", push_mock):
+        await text_message_handler(update, context)
+        # Drain background tasks so the push completes
+        pending = [t for t in _asyncio.all_tasks() if t is not _asyncio.current_task()]
+        for t in pending:
+            try:
+                await t
+            except Exception:
+                pass
+
+    # push_capture should have fired for the failed-scrape capture, even
+    # though LLM processing was skipped.
+    push_mock.assert_awaited()
+
+
+@pytest.mark.asyncio
 async def test_text_message_handler_records_scrape_error_without_crashing(conn):
     from unittest.mock import AsyncMock, patch
     from bot.handlers import text_message_handler

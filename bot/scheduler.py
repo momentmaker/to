@@ -87,7 +87,12 @@ def _derive_content(row: aiosqlite.Row) -> str:
 async def process_pending(
     *, conn: aiosqlite.Connection, settings: Settings, providers: Providers,
 ) -> int:
-    """Re-run LLM ingest for pending captures. Returns count processed."""
+    """Re-run LLM ingest for pending captures AND push the result to GitHub.
+    Returns count processed.
+
+    Both steps matter: without the GitHub push here, captures that this job
+    rescues would sit in SQLite and only reach the repo on nightly_sync.
+    """
     rows = await _select_pending(conn)
     count = 0
     for row in rows:
@@ -104,6 +109,17 @@ async def process_pending(
         except Exception as e:
             log.exception("process_pending failed for capture %s", row["id"])
             await process.mark_failed(conn, capture_id=row["id"], error=str(e))
+            continue
+        # LLM processing succeeded — now get the capture into the repo.
+        try:
+            await github_sync.push_capture(
+                int(row["id"]), settings=settings, conn=conn,
+            )
+        except Exception:
+            log.exception(
+                "process_pending push failed for capture %s; nightly_sync will retry",
+                row["id"],
+            )
     return count
 
 
