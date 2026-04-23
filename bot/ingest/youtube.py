@@ -50,6 +50,30 @@ class YouTubeContent:
     is_auto_generated: bool
 
 
+# Distinct failure reasons surfaced back to the user via scrape_error. Lets
+# you tell an infrastructure problem (we're IP-banned) from a video problem
+# (captions disabled) from a language problem (no English captions), which
+# drives very different remediations.
+FAIL_IP_BLOCKED = (
+    "ip_blocked: YouTube is blocking requests from this server's IP. "
+    "VPS datacenter IPs (Coolify, Fly, Hetzner, etc.) get flagged. "
+    "needs a proxy or residential IP — see README."
+)
+FAIL_TRANSCRIPTS_DISABLED = (
+    "transcripts_disabled: the uploader turned off captions for this video."
+)
+FAIL_NO_TRANSCRIPT = (
+    "no_transcript: the video has no captions in any language we tried."
+)
+FAIL_VIDEO_UNAVAILABLE = (
+    "video_unavailable: private, deleted, region-locked, or age-restricted."
+)
+FAIL_UNKNOWN = (
+    "transcript unavailable (unknown reason). try again later, or paste a "
+    "transcript manually."
+)
+
+
 def _is_youtube_host(host: str) -> bool:
     host = host.lower()
     return (
@@ -124,40 +148,102 @@ async def _fetch_oembed(
 
 def _fetch_transcript_sync(
     video_id: str, languages: Iterable[str] = _TRANSCRIPT_LANGS,
-) -> tuple[str, str, bool] | None:
-    """Blocking transcript fetch. Returns (text, language_code, is_auto) or
-    None on any failure. Runs in a threadpool from the async caller."""
-    from youtube_transcript_api import YouTubeTranscriptApi, YouTubeTranscriptApiException
+) -> tuple[str, str, bool] | str:
+    """Blocking transcript fetch. Runs in a threadpool from the async caller.
 
+    Returns either:
+      - (text, language_code, is_auto) on success, or
+      - a FAIL_* string describing the failure mode (for scrape_error).
+
+    Runs two passes: first tries the preferred language list, then falls
+    back to any available caption if the first pass saw `NoTranscriptFound`.
+    Japanese/Chinese/other-language videos get captured that way instead
+    of being rejected for not having English captions.
+    """
+    from youtube_transcript_api import (
+        YouTubeTranscriptApi,
+        YouTubeTranscriptApiException,
+        TranscriptsDisabled,
+        NoTranscriptFound,
+        VideoUnavailable,
+        IpBlocked,
+        RequestBlocked,
+    )
+
+    api = YouTubeTranscriptApi()
+
+    def _extract(fetched) -> tuple[str, str, bool]:
+        segments = [seg.text.strip() for seg in fetched.snippets if seg.text.strip()]
+        return " ".join(segments).strip(), fetched.language_code, fetched.is_generated
+
+    # Pass 1: preferred languages.
     try:
-        fetched = YouTubeTranscriptApi().fetch(video_id, languages=list(languages))
+        fetched = api.fetch(video_id, languages=list(languages))
+    except (IpBlocked, RequestBlocked) as e:
+        log.warning("youtube IP blocked for %s: %s", video_id, type(e).__name__)
+        return FAIL_IP_BLOCKED
+    except TranscriptsDisabled:
+        log.info("youtube transcripts disabled for %s", video_id)
+        return FAIL_TRANSCRIPTS_DISABLED
+    except VideoUnavailable:
+        log.info("youtube video unavailable for %s", video_id)
+        return FAIL_VIDEO_UNAVAILABLE
+    except NoTranscriptFound:
+        # Fall through to pass 2: any available language.
+        fetched = None
     except YouTubeTranscriptApiException as e:
         log.info("youtube transcript unavailable for %s: %s", video_id, type(e).__name__)
-        return None
+        return FAIL_UNKNOWN
     except Exception as e:
-        # Network issues, library bugs, etc. Don't let these bubble up to
-        # the Telegram handler.
         log.warning(
             "youtube transcript unexpected error for %s: %s: %s",
             video_id, type(e).__name__, e,
         )
-        return None
+        return FAIL_UNKNOWN
 
-    segments = [seg.text.strip() for seg in fetched.snippets if seg.text.strip()]
-    text = " ".join(segments).strip()
+    # Pass 2: try any language the video has (only entered if pass 1 saw
+    # NoTranscriptFound).
+    if fetched is None:
+        try:
+            transcript_list = api.list(video_id)
+            transcript = transcript_list.find_transcript(
+                [t.language_code for t in transcript_list]
+            )
+            fetched = transcript.fetch()
+        except (IpBlocked, RequestBlocked):
+            return FAIL_IP_BLOCKED
+        except YouTubeTranscriptApiException as e:
+            log.info("youtube no-lang fallback failed for %s: %s", video_id, type(e).__name__)
+            return FAIL_NO_TRANSCRIPT
+        except Exception as e:
+            log.warning(
+                "youtube no-lang fallback unexpected error for %s: %s: %s",
+                video_id, type(e).__name__, e,
+            )
+            return FAIL_NO_TRANSCRIPT
+
+    text, language_code, is_generated = _extract(fetched)
     if not text:
-        return None
-    return text, fetched.language_code, fetched.is_generated
+        return FAIL_NO_TRANSCRIPT
+    return text, language_code, is_generated
 
 
 async def fetch_transcript(
     url: str,
     *,
     client: httpx.AsyncClient | None = None,
-) -> YouTubeContent | None:
-    """Async fetch of captions + title for a YouTube URL. Returns None on
-    any failure (private video, no captions, rate-limited, etc.) — caller
-    should degrade to a bare-URL capture."""
+) -> YouTubeContent | str | None:
+    """Async fetch of captions + title for a YouTube URL.
+
+    Returns:
+      - YouTubeContent on success
+      - a FAIL_* string (see module constants) when the library can tell
+        us WHY it failed — the caller should surface this as scrape_error
+        so the user can distinguish infra issues (IP block) from video
+        issues (captions disabled) from language issues (no English).
+      - None only when the URL isn't a YouTube URL at all (not a failure,
+        just wrong route).
+    """
     video_id = extract_video_id(url)
     if video_id is None:
         return None
@@ -172,8 +258,9 @@ async def fetch_transcript(
         transcript_task = asyncio.to_thread(_fetch_transcript_sync, video_id)
         (title, author), transcript = await asyncio.gather(oembed_task, transcript_task)
 
-        if transcript is None:
-            return None
+        if isinstance(transcript, str):
+            # Failure string — bubble up to the caller.
+            return transcript
         text, language_code, is_auto = transcript
         return YouTubeContent(
             url=url,

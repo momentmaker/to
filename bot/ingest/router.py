@@ -88,14 +88,15 @@ async def scrape_url(url: str, *, settings: Settings) -> UrlScrapeResult:
 
     if kind == "youtube":
         yt = await youtube.fetch_transcript(url)
-        if yt is None:
+        # fetch_transcript returns:
+        #   YouTubeContent → success
+        #   str (FAIL_*)   → classified failure reason
+        #   None           → URL wasn't YouTube (shouldn't reach here given
+        #                    classify_url already routed us)
+        if yt is None or isinstance(yt, str):
+            error = yt if isinstance(yt, str) else youtube.FAIL_UNKNOWN
             return UrlScrapeResult(
-                source="youtube", payload={}, content=url,
-                error=(
-                    "youtube transcript unavailable "
-                    "(private / no captions / rate-limited). "
-                    "try again later, or paste a transcript manually."
-                ),
+                source="youtube", payload={}, content=url, error=error,
             )
         # Content for LLM: title + transcript. process.process_capture caps
         # the LLM call at 30k chars already, so long podcasts are bounded.

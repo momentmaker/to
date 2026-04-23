@@ -137,8 +137,8 @@ def test_sync_fetch_concatenates_snippets(monkeypatch):
     assert is_auto is False
 
 
-def test_sync_fetch_returns_none_on_transcripts_disabled(monkeypatch):
-    from youtube_transcript_api._errors import TranscriptsDisabled
+def test_sync_fetch_returns_reason_on_transcripts_disabled(monkeypatch):
+    from youtube_transcript_api import TranscriptsDisabled
 
     class _FakeApi:
         def __init__(self): pass
@@ -146,40 +146,114 @@ def test_sync_fetch_returns_none_on_transcripts_disabled(monkeypatch):
             raise TranscriptsDisabled(vid)
     monkeypatch.setattr("youtube_transcript_api.YouTubeTranscriptApi", _FakeApi)
 
-    assert youtube._fetch_transcript_sync("abc12345678") is None
+    result = youtube._fetch_transcript_sync("abc12345678")
+    assert result == youtube.FAIL_TRANSCRIPTS_DISABLED
 
 
-def test_sync_fetch_returns_none_on_no_transcript_found(monkeypatch):
-    from youtube_transcript_api._errors import NoTranscriptFound
+def test_sync_fetch_returns_reason_on_video_unavailable(monkeypatch):
+    from youtube_transcript_api import VideoUnavailable
+
+    class _FakeApi:
+        def __init__(self): pass
+        def fetch(self, vid, languages):
+            raise VideoUnavailable(vid)
+    monkeypatch.setattr("youtube_transcript_api.YouTubeTranscriptApi", _FakeApi)
+
+    result = youtube._fetch_transcript_sync("abc12345678")
+    assert result == youtube.FAIL_VIDEO_UNAVAILABLE
+
+
+def test_sync_fetch_returns_ip_blocked_reason(monkeypatch):
+    """The important one: when YouTube blocks the server's IP, give the
+    user a distinct message so they know it's an infrastructure problem,
+    not a per-video one."""
+    from youtube_transcript_api import IpBlocked
+
+    class _FakeApi:
+        def __init__(self): pass
+        def fetch(self, vid, languages):
+            raise IpBlocked(vid)
+    monkeypatch.setattr("youtube_transcript_api.YouTubeTranscriptApi", _FakeApi)
+
+    result = youtube._fetch_transcript_sync("abc12345678")
+    assert result == youtube.FAIL_IP_BLOCKED
+    assert "ip_blocked" in result.lower()
+    assert "proxy" in result.lower() or "residential" in result.lower()
+
+
+def test_sync_fetch_falls_back_to_any_language(monkeypatch):
+    """If English isn't available, fall back to the first available
+    caption language — better to capture a Japanese video's Japanese
+    captions than give up entirely."""
+    from youtube_transcript_api import NoTranscriptFound
+
+    call_count = {"fetch": 0}
+    ja_fetched = _fake_fetched(
+        [_fake_snippet("日本語の字幕")], language_code="ja", is_generated=False,
+    )
+
+    class _FakeTranscript:
+        language_code = "ja"
+        def fetch(self): return ja_fetched
+
+    class _FakeTranscriptList(list):
+        def find_transcript(self, langs):
+            return _FakeTranscript()
+
+    class _FakeApi:
+        def __init__(self): pass
+        def fetch(self, vid, languages):
+            call_count["fetch"] += 1
+            raise NoTranscriptFound(vid, list(languages), None)
+        def list(self, vid):
+            return _FakeTranscriptList([_FakeTranscript()])
+    monkeypatch.setattr("youtube_transcript_api.YouTubeTranscriptApi", _FakeApi)
+
+    result = youtube._fetch_transcript_sync("abc12345678")
+    assert isinstance(result, tuple)
+    text, lang, _ = result
+    assert lang == "ja"
+    assert "日本語" in text
+    # First-pass attempted English; fallback then ran.
+    assert call_count["fetch"] == 1
+
+
+def test_sync_fetch_returns_no_transcript_when_fallback_also_fails(monkeypatch):
+    from youtube_transcript_api import NoTranscriptFound
 
     class _FakeApi:
         def __init__(self): pass
         def fetch(self, vid, languages):
             raise NoTranscriptFound(vid, list(languages), None)
+        def list(self, vid):
+            raise NoTranscriptFound(vid, [], None)
     monkeypatch.setattr("youtube_transcript_api.YouTubeTranscriptApi", _FakeApi)
 
-    assert youtube._fetch_transcript_sync("abc12345678") is None
+    result = youtube._fetch_transcript_sync("abc12345678")
+    assert result == youtube.FAIL_NO_TRANSCRIPT
 
 
-def test_sync_fetch_swallows_unexpected_errors(monkeypatch):
+def test_sync_fetch_returns_reason_on_unexpected_error(monkeypatch):
     class _FakeApi:
         def __init__(self): pass
         def fetch(self, vid, languages):
             raise RuntimeError("connection reset")
     monkeypatch.setattr("youtube_transcript_api.YouTubeTranscriptApi", _FakeApi)
 
-    assert youtube._fetch_transcript_sync("abc12345678") is None
+    result = youtube._fetch_transcript_sync("abc12345678")
+    assert result == youtube.FAIL_UNKNOWN
 
 
-def test_sync_fetch_returns_none_on_empty_transcript(monkeypatch):
-    """All whitespace-only snippets should collapse to empty → None."""
+def test_sync_fetch_returns_reason_on_empty_transcript(monkeypatch):
+    """All whitespace-only snippets should collapse to empty → no_transcript."""
     class _FakeApi:
         def __init__(self): pass
         def fetch(self, vid, languages):
             return _fake_fetched([_fake_snippet("   "), _fake_snippet("\t")])
     monkeypatch.setattr("youtube_transcript_api.YouTubeTranscriptApi", _FakeApi)
 
-    assert youtube._fetch_transcript_sync("abc12345678") is None
+    result = youtube._fetch_transcript_sync("abc12345678")
+    assert result == youtube.FAIL_NO_TRANSCRIPT
 
 
 # ---- fetch_transcript (integration) --------------------------------------
@@ -220,13 +294,14 @@ async def test_fetch_transcript_happy_path(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fetch_transcript_returns_none_when_captions_fail(monkeypatch):
-    """oEmbed succeeds, captions fail → function returns None (caller
-    handles the bare-URL fallback)."""
+async def test_fetch_transcript_returns_reason_string_when_captions_fail(monkeypatch):
+    """oEmbed succeeds, captions fail with a known reason → fetch_transcript
+    bubbles that reason up as a string so the caller can surface it to the
+    user. (None is reserved for 'not a YouTube URL'.)"""
     def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"title": "t", "author_name": "a"})
 
-    from youtube_transcript_api._errors import TranscriptsDisabled
+    from youtube_transcript_api import TranscriptsDisabled
     class _FakeApi:
         def __init__(self): pass
         def fetch(self, vid, languages):
@@ -239,7 +314,7 @@ async def test_fetch_transcript_returns_none_when_captions_fail(monkeypatch):
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
             client=client,
         )
-    assert out is None
+    assert out == youtube.FAIL_TRANSCRIPTS_DISABLED
 
 
 @pytest.mark.asyncio
@@ -314,21 +389,32 @@ async def test_scrape_url_routes_youtube_to_transcript():
 
 
 @pytest.mark.asyncio
-async def test_scrape_url_youtube_degrades_when_transcript_fails():
+async def test_scrape_url_youtube_surfaces_specific_failure_reasons():
+    """The router must propagate the classified failure reason verbatim
+    into scrape_error so the user can tell 'YouTube blocked our IP' from
+    'this video has no captions' from 'this video is private'.
+    """
     from bot.config import Settings
     from bot.ingest.router import scrape_url
     settings = Settings(
         TELEGRAM_BOT_TOKEN="x", TELEGRAM_OWNER_ID=1, DOB="1990-01-01",
         ANTHROPIC_API_KEY="k",
     )
-    with patch(
-        "bot.ingest.router.youtube.fetch_transcript",
-        AsyncMock(return_value=None),
+
+    for reason in (
+        youtube.FAIL_IP_BLOCKED,
+        youtube.FAIL_TRANSCRIPTS_DISABLED,
+        youtube.FAIL_NO_TRANSCRIPT,
+        youtube.FAIL_VIDEO_UNAVAILABLE,
+        youtube.FAIL_UNKNOWN,
     ):
-        result = await scrape_url(
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ", settings=settings,
-        )
-    assert result.source == "youtube"
-    assert result.content == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-    assert result.error is not None
-    assert "transcript" in result.error.lower()
+        with patch(
+            "bot.ingest.router.youtube.fetch_transcript",
+            AsyncMock(return_value=reason),
+        ):
+            result = await scrape_url(
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ", settings=settings,
+            )
+        assert result.source == "youtube"
+        assert result.content == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        assert result.error == reason

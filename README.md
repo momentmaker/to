@@ -193,6 +193,20 @@ Then send anything — a line you overheard, a link, a photo of a book page, a v
 | A **PDF** | Extracts text via `pypdf`, classifies by token estimate (tiny / medium / large), processes normally. Scanned / image-only PDFs are rejected with a nudge to send a photo. Rejects >50 pages or >20k tokens | `kind=pdf`, text in `raw`, `payload.{page_count, token_estimate, tier, filename}` |
 | A forwarded message | Preserves the forward metadata | `payload.forward_origin` |
 
+> **Heads-up on YouTube captures.** The transcript scraper hits the same
+> unofficial endpoint YouTube's own player uses, via the community
+> [`youtube-transcript-api`](https://pypi.org/project/youtube-transcript-api/).
+> YouTube actively blocks datacenter IPs — Coolify, Fly, Hetzner,
+> DigitalOcean, Railway are all commonly flagged. You may get a capture
+> or two through, then start seeing `scrape_error: ip_blocked: …` on
+> every subsequent video. When that happens you have two options: (a)
+> configure the library to use a proxy (the library supports
+> WebshareProxyConfig and generic HTTP proxies), or (b) accept the
+> limitation and send transcripts manually as text captures. The error
+> message surfaces the specific failure mode (`ip_blocked`,
+> `transcripts_disabled`, `no_transcript`, `video_unavailable`) so you
+> can tell an infra problem from a per-video problem.
+
 ### Commands
 
 | Command | What it does |
@@ -439,7 +453,7 @@ No external cron. Everything runs in the single Python process. Scheduler is APS
 | `bot/handlers.py` | Every `/command` + message-kind router. Owner gate is here. |
 | `bot/db.py` | Schema + migrations (`MIGRATIONS` list + `PRAGMA user_version`), insert/query helpers |
 | `bot/llm/` | Provider abstraction. `base.py` = types + timeout table. `anthropic.py` / `openai.py` = adapters with explicit prompt caching. `router.py` = per-purpose provider selection + budget-driven model degrade. `budget.py` = usage ledger + cap enforcement. |
-| `bot/ingest/` | Scraping pipeline. `router.py` classifies + dispatches. `generic.py` / `zyte.py` / `hn.py` / `exa.py` for URLs. `voice.py` / `vision.py` for media. |
+| `bot/ingest/` | Scraping pipeline. `router.py` classifies + dispatches. `generic.py` / `zyte.py` / `hn.py` / `exa.py` / `nitter.py` / `youtube.py` / `pdf.py` for URLs + docs. `voice.py` / `vision.py` for media. |
 | `bot/process.py` | Post-ingest LLM call for title/tags/quotes/summary |
 | `bot/oracle.py` | `/ask` — query expansion, FTS5 retrieval, orchurator synthesis with `[N]` citations |
 | `bot/digest/` | Weekly pipeline. `weekly.py` = orchestrator. `validate.py` = quote-only + grapheme + whisper length. `fz_state.py` = cumulative fz.ax JSON builder. |
