@@ -452,6 +452,8 @@ async def test_scrape_url_routes_youtube_with_full_payload():
     assert result.payload["title"] == "Never Gonna Give You Up"
     assert result.payload["description"] == "The classic."
     assert result.payload["is_auto_generated"] is False
+    # Happy path: transcript_error field is present but None.
+    assert result.payload["transcript_error"] is None
 
 
 @pytest.mark.asyncio
@@ -490,9 +492,10 @@ async def test_scrape_url_youtube_uses_metadata_when_transcript_blocked():
         assert expected in result.content
     assert result.payload["title"] == "The Supply and Demand of AI Tokens"
     assert result.payload["description"] is not None
-    # Transcript error is STILL preserved in payload for diagnostics,
-    # just not surfaced as scrape_error since we have metadata.
+    # Transcript error IS preserved in payload for diagnostics, just not
+    # surfaced as scrape_error since we have metadata.
     assert result.payload.get("text") == ""
+    assert result.payload.get("transcript_error") == youtube.FAIL_IP_BLOCKED
 
 
 @pytest.mark.asyncio

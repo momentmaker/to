@@ -1,18 +1,19 @@
-"""YouTube transcript ingestion.
+"""YouTube ingestion — title + description + captions.
 
-Pulls captions (auto-generated or manual) via youtube-transcript-api, plus
-title+author via YouTube's free oEmbed endpoint. Feeds the existing ingest
-pipeline so you get {title, tags, quotes, summary} derived from the video
-the same way articles do.
+Three parallel fetches per URL, all best-effort and independent:
+  - oEmbed (title + channel name) — public, stable, rarely blocked
+  - watch-page HTML scrape (og:description) — same source Telegram's link
+    preview uses; less aggressively gated than the transcript endpoint
+  - transcript via youtube-transcript-api — the ambitious one, prone to
+    IP-blocking on VPS datacenter IPs
 
-No API key required for either call. youtube-transcript-api hits the same
-unofficial endpoint the YouTube player uses; oEmbed is a public, stable
-URL (https://www.youtube.com/oembed?url=...&format=json).
+No API key required for any of these.
 
-Failure modes handled:
-  - private / deleted / age-restricted videos → None (bare-URL fallback)
-  - no captions (rare, usually auto-caps exist) → None
-  - YouTube temporarily rate-limiting our IP → None
+`fetch()` returns a YouTubeContent populated with whatever succeeded,
+never None (except when the URL isn't a YouTube URL at all). Transcript
+failures are classified into FAIL_* strings and carried on
+`transcript_error` — the router decides whether to surface that as
+scrape_error based on whether any other metadata came back.
 """
 
 from __future__ import annotations
@@ -340,7 +341,3 @@ async def fetch(
     finally:
         if owned:
             await client.aclose()
-
-
-# Back-compat alias for the previous name. Callers should prefer `fetch`.
-fetch_transcript = fetch

@@ -119,11 +119,18 @@ async def scrape_url(url: str, *, settings: Settings) -> UrlScrapeResult:
                 "text": yt.text,
                 "language_code": yt.language_code,
                 "is_auto_generated": yt.is_auto_generated,
+                # Preserve the classified transcript failure in the payload
+                # even when we don't surface it as scrape_error (i.e. when
+                # metadata was enough to build a useful capture). Otherwise
+                # you'd look at a `.md` six months later and have no idea
+                # why `text` is empty.
+                "transcript_error": yt.transcript_error,
             },
             content=content,
-            # Only surface transcript_error when we truly have nothing else
-            # to show (no title, no description). If we got metadata, the
-            # capture is useful even without captions; don't alarm the user.
+            # Only surface transcript_error as scrape_error when we truly
+            # have nothing else to show (no title, no description). If we
+            # got metadata, the capture is useful even without captions;
+            # don't alarm the user. The payload still records the reason.
             error=(
                 yt.transcript_error
                 if (yt.transcript_error and not yt.title and not yt.description)
