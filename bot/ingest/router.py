@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from bot.config import Settings
-from bot.ingest import exa, generic, hn, nitter, zyte
+from bot.ingest import exa, generic, hn, nitter, youtube, zyte
 from bot.ingest.urls import classify_url, extract_url
 
 log = logging.getLogger(__name__)
@@ -84,6 +84,36 @@ async def scrape_url(url: str, *, settings: Settings) -> UrlScrapeResult:
                 "via": tweet.via,
             },
             content=(f"{tweet.author}\n\n{tweet.text}" if tweet.author else tweet.text),
+        )
+
+    if kind == "youtube":
+        yt = await youtube.fetch_transcript(url)
+        if yt is None:
+            return UrlScrapeResult(
+                source="youtube", payload={}, content=url,
+                error=(
+                    "youtube transcript unavailable "
+                    "(private / no captions / rate-limited). "
+                    "try again later, or paste a transcript manually."
+                ),
+            )
+        # Content for LLM: title + transcript. process.process_capture caps
+        # the LLM call at 30k chars already, so long podcasts are bounded.
+        header = yt.title or yt.video_id
+        if yt.author:
+            header = f"{header}\nby {yt.author}"
+        content = f"{header}\n\n{yt.text}"
+        return UrlScrapeResult(
+            source="youtube",
+            payload={
+                "video_id": yt.video_id,
+                "title": yt.title,
+                "author": yt.author,
+                "text": yt.text,
+                "language_code": yt.language_code,
+                "is_auto_generated": yt.is_auto_generated,
+            },
+            content=content,
         )
 
     if kind == "reddit":

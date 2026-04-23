@@ -6,7 +6,7 @@ import re
 from typing import Literal
 from urllib.parse import urlparse
 
-UrlKind = Literal["hn", "reddit", "x", "generic"]
+UrlKind = Literal["hn", "reddit", "x", "youtube", "generic"]
 
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
@@ -24,4 +24,6 @@ def classify_url(url: str) -> UrlKind:
         return "reddit"
     if host in ("x.com", "twitter.com") or host.endswith(".x.com") or host.endswith(".twitter.com"):
         return "x"
+    if host in ("youtube.com", "youtu.be") or host.endswith(".youtube.com"):
+        return "youtube"
     return "generic"

@@ -187,7 +187,7 @@ Then send anything — a line you overheard, a link, a photo of a book page, a v
 | Send this | And it | Stored under |
 |---|---|---|
 | Plain text | Stores verbatim + LLM-extracts title/tags/summary | `kind=text` |
-| A URL | Scrapes (Readability, Zyte fallback for JS-heavy, HN firebase for `news.ycombinator.com`, Exa for Reddit, **Nitter + Zyte for X/Twitter**) → extracts → **asks you "why?"** | `kind=url`, with why as a child |
+| A URL | Scrapes (Readability, Zyte fallback for JS-heavy, HN firebase for `news.ycombinator.com`, Exa for Reddit, **Nitter + Zyte for X/Twitter**, **youtube-transcript-api + oEmbed for YouTube**) → extracts → **asks you "why?"** | `kind=url`, with why as a child |
 | A voice note | Transcribes via Whisper → processes as text | `kind=voice`, transcript in `payload.transcript` |
 | A photo | Vision OCR + description via Claude/GPT-4o | `kind=image`, in `payload.vision` |
 | A **PDF** | Extracts text via `pypdf`, classifies by token estimate (tiny / medium / large), processes normally. Scanned / image-only PDFs are rejected with a nudge to send a photo. Rejects >50 pages or >20k tokens | `kind=pdf`, text in `raw`, `payload.{page_count, token_estimate, tier, filename}` |
