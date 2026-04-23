@@ -131,8 +131,27 @@ Append one line to `sparks.md` at the repo root, format:
 YYYY-MM-DD — <the line>
 ```
 
-If `sparks.md` doesn't exist, create it with a `# sparks\n\n` header first.
-Append at end, preserving chronological order.
+**Use Python for the write — do NOT append via shell echo/cat.** Naive
+append concatenates onto the previous line if the file doesn't already
+end in a newline, which it often doesn't on first write. This block is
+correct and idempotent:
+
+```bash
+python3 - <<'PY'
+from pathlib import Path
+p = Path("sparks.md")
+existing = p.read_text(encoding="utf-8") if p.exists() else "# sparks\n\n"
+# Ensure exactly one trailing newline before appending, then append the
+# new line followed by a newline so the NEXT day's append also lands
+# on its own line.
+normalized = existing.rstrip("\n") + "\n"
+new_line = "YYYY-MM-DD — <the line>\n"
+p.write_text(normalized + new_line, encoding="utf-8")
+PY
+```
+
+Substitute `YYYY-MM-DD` and `<the line>` with the actual values before
+running. Every spark line MUST occupy its own line in the file.
 
 ## Step 5 — Detect echoes
 
@@ -150,27 +169,54 @@ pad the file with weak connections.
 ## Step 6 — Write the echo file (conditional)
 
 Only if Step 5 found 1–3 real echoes, write
-`<YYYY-wNN>/<YYYY-MM-DD>-echo.md`:
+`<YYYY-wNN>/<YYYY-MM-DD>-echo.md`.
 
-```
-+++
-kind = "echo"
-for_date = "YYYY-MM-DD"
-generated_at = "<now ISO UTC, Z suffix>"
-+++
+**Use Python for the write — do NOT hand-compose the frontmatter as a
+shell string.** The frontmatter MUST span multiple lines; if you write
+`+++ kind = "echo" for_date = "..." +++` on a single line the file is
+technically malformed TOML and unreadable when rendered. This block
+produces the exact byte-for-byte correct layout:
 
-<orchurator voice — 1 to 3 short observations>
+```bash
+python3 - <<'PY'
+from pathlib import Path
+
+# One "observation" per rhyme. Each is three lines (two quotes + one
+# orchurator sentence), separated from the next by a blank line.
+observations = [
+    # Example shape — replace with your actual echoes:
+    # (yesterday_date, yesterday_quote, past_date, past_quote, observation)
+    ("2026-04-22", "crazy last of privacy for employees",
+     "2026-04-21", "didn't even know someone kept this data",
+     "both times you caught the asymmetry between what's kept on you and what you keep."),
+]
+
+lines = [
+    "+++",
+    'kind = "echo"',
+    'for_date = "YYYY-MM-DD"',               # <-- substitute yesterday's date
+    'generated_at = "YYYY-MM-DDTHH:MM:SSZ"', # <-- substitute now, ISO UTC, seconds, Z suffix
+    "+++",
+    "",
+]
+for i, (yd, yq, pd, pq, obs) in enumerate(observations):
+    if i > 0:
+        lines.append("")  # blank line between observations
+    lines.append(f"[{yd}] _{yq}_")
+    lines.append(f"[{pd}] _{pq}_")
+    lines.append(obs)
+
+Path("<YYYY-wNN>/<YYYY-MM-DD>-echo.md").write_text(
+    "\n".join(lines) + "\n", encoding="utf-8",
+)
+PY
 ```
 
-Each observation follows this pattern:
-
-```
-[YYYY-MM-DD] _<verbatim line from yesterday>_
-[YYYY-MM-DD] _<verbatim line from the past>_
-<one-sentence orchurator observation stitching them — short, literal,
-bottomless, the way a child asks. No "beautiful", "wonderful", "journey",
-or "resonate". No emojis unless the user used them.>
-```
+Each observation's three lines ARE deliberately on three separate lines
+(verbatim quote from yesterday, verbatim quote from the past, one
+orchurator sentence stitching them). The orchurator sentence is short,
+literal, bottomless, the way a child asks. No "beautiful", "wonderful",
+"journey", or "resonate". No emojis unless the user used them.
 
 The quotes are MANDATORY and verbatim. The observation is orchurator's one
 authorial move — keep it to a single short sentence per echo.
