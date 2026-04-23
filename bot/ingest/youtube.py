@@ -127,8 +127,7 @@ def _fetch_transcript_sync(
 ) -> tuple[str, str, bool] | None:
     """Blocking transcript fetch. Returns (text, language_code, is_auto) or
     None on any failure. Runs in a threadpool from the async caller."""
-    from youtube_transcript_api import YouTubeTranscriptApi
-    from youtube_transcript_api._errors import YouTubeTranscriptApiException
+    from youtube_transcript_api import YouTubeTranscriptApi, YouTubeTranscriptApiException
 
     try:
         fetched = YouTubeTranscriptApi().fetch(video_id, languages=list(languages))

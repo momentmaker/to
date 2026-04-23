@@ -73,6 +73,13 @@ def test_extract_id_from_live_url():
     ) == "dQw4w9WgXcQ"
 
 
+def test_extract_id_from_legacy_v_url():
+    """The old /v/ID embed form still shows up in the wild."""
+    assert youtube.extract_video_id(
+        "https://www.youtube.com/v/dQw4w9WgXcQ"
+    ) == "dQw4w9WgXcQ"
+
+
 def test_extract_id_returns_none_for_non_youtube():
     assert youtube.extract_video_id("https://example.com/page") is None
 
