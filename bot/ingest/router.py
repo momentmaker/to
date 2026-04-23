@@ -87,34 +87,48 @@ async def scrape_url(url: str, *, settings: Settings) -> UrlScrapeResult:
         )
 
     if kind == "youtube":
-        yt = await youtube.fetch_transcript(url)
-        # fetch_transcript returns:
-        #   YouTubeContent → success
-        #   str (FAIL_*)   → classified failure reason
-        #   None           → URL wasn't YouTube (shouldn't reach here given
-        #                    classify_url already routed us)
-        if yt is None or isinstance(yt, str):
-            error = yt if isinstance(yt, str) else youtube.FAIL_UNKNOWN
+        yt = await youtube.fetch(url)
+        # None only for non-YouTube URLs (shouldn't happen given classify_url
+        # already routed us here, but handle defensively).
+        if yt is None:
             return UrlScrapeResult(
-                source="youtube", payload={}, content=url, error=error,
+                source="youtube", payload={}, content=url,
+                error=youtube.FAIL_UNKNOWN,
             )
-        # Content for LLM: title + transcript. process.process_capture caps
-        # the LLM call at 30k chars already, so long podcasts are bounded.
-        header = yt.title or yt.video_id
+        # Build LLM content from whatever metadata + transcript we got.
+        # Telegram-preview minimum: title + description. Transcript is a bonus.
+        parts: list[str] = []
+        if yt.title:
+            parts.append(yt.title)
         if yt.author:
-            header = f"{header}\nby {yt.author}"
-        content = f"{header}\n\n{yt.text}"
+            parts.append(f"by {yt.author}")
+        if yt.description:
+            parts.append("")  # blank line before description
+            parts.append(yt.description)
+        if yt.text:
+            parts.append("")  # blank line before transcript
+            parts.append(yt.text)
+        content = "\n".join(parts) if parts else url
         return UrlScrapeResult(
             source="youtube",
             payload={
                 "video_id": yt.video_id,
                 "title": yt.title,
                 "author": yt.author,
+                "description": yt.description,
                 "text": yt.text,
                 "language_code": yt.language_code,
                 "is_auto_generated": yt.is_auto_generated,
             },
             content=content,
+            # Only surface transcript_error when we truly have nothing else
+            # to show (no title, no description). If we got metadata, the
+            # capture is useful even without captions; don't alarm the user.
+            error=(
+                yt.transcript_error
+                if (yt.transcript_error and not yt.title and not yt.description)
+                else None
+            ),
         )
 
     if kind == "reddit":

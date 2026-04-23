@@ -30,24 +30,42 @@ log = logging.getLogger(__name__)
 
 
 _OEMBED_URL = "https://www.youtube.com/oembed"
+_WATCH_URL = "https://www.youtube.com/watch"
 _OEMBED_TIMEOUT = 10.0
+_WATCH_TIMEOUT = 10.0
 # YouTube video IDs are always exactly 11 chars from [A-Za-z0-9_-].
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 # Transcript languages to try in order. English first; any-English second.
 # If the video has only, say, Japanese captions, we'll fall through and
 # the api will raise NoTranscriptFound — we handle that gracefully.
 _TRANSCRIPT_LANGS: tuple[str, ...] = ("en", "en-US", "en-GB")
+# Cap description length — YouTube allows up to 5000 chars, but a
+# commonplace capture doesn't need the full pinned comment thread or
+# affiliate-link wall.
+_DESCRIPTION_MAX_CHARS = 2000
+_WATCH_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+
+_OG_DESC_RE = re.compile(
+    r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+_META_DESC_RE = re.compile(
+    r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
 
 
 @dataclass
 class YouTubeContent:
     url: str
     video_id: str
-    title: str | None       # from oEmbed (may be None on rate-limit / fail)
-    author: str | None      # channel name from oEmbed
-    text: str               # concatenated caption text
-    language_code: str      # e.g. "en", "en-US"
-    is_auto_generated: bool
+    title: str | None        # from oEmbed (may be None on rate-limit / fail)
+    author: str | None       # channel name from oEmbed
+    description: str | None  # from the watch page's og:description
+    text: str                # concatenated caption text, "" if transcripts failed
+    language_code: str | None  # None when we have no transcript
+    is_auto_generated: bool | None  # None when we have no transcript
+    transcript_error: str | None   # FAIL_* string when the transcript part failed
 
 
 # Distinct failure reasons surfaced back to the user via scrape_error. Lets
@@ -146,6 +164,45 @@ async def _fetch_oembed(
     return data.get("title"), data.get("author_name")
 
 
+def _unescape_html(text: str) -> str:
+    for a, b in (("&quot;", '"'), ("&#39;", "'"), ("&amp;", "&"),
+                 ("&lt;", "<"), ("&gt;", ">")):
+        text = text.replace(a, b)
+    return text
+
+
+async def _fetch_description(
+    video_id: str, client: httpx.AsyncClient,
+) -> str | None:
+    """Scrape og:description from the watch page HTML. Telegram's link
+    preview does the same thing — the YouTube consumer HTML serves these
+    meta tags without the aggressive rate-limiting the transcript endpoint
+    gets. Returns None on any failure (blocked page, 429, parse miss)."""
+    try:
+        resp = await client.get(
+            _WATCH_URL,
+            params={"v": video_id},
+            headers={"User-Agent": _WATCH_UA, "Accept": "text/html"},
+            timeout=_WATCH_TIMEOUT,
+            follow_redirects=True,
+        )
+    except Exception as e:
+        log.debug("youtube watch page fetch failed for %s: %s", video_id, e)
+        return None
+    if resp.status_code != 200 or not resp.text:
+        return None
+    html = resp.text
+    m = _OG_DESC_RE.search(html) or _META_DESC_RE.search(html)
+    if not m:
+        return None
+    text = _unescape_html(m.group(1)).strip()
+    if not text:
+        return None
+    if len(text) > _DESCRIPTION_MAX_CHARS:
+        text = text[:_DESCRIPTION_MAX_CHARS].rsplit(" ", 1)[0] + "…"
+    return text
+
+
 def _fetch_transcript_sync(
     video_id: str, languages: Iterable[str] = _TRANSCRIPT_LANGS,
 ) -> tuple[str, str, bool] | str:
@@ -228,21 +285,23 @@ def _fetch_transcript_sync(
     return text, language_code, is_generated
 
 
-async def fetch_transcript(
+async def fetch(
     url: str,
     *,
     client: httpx.AsyncClient | None = None,
-) -> YouTubeContent | str | None:
-    """Async fetch of captions + title for a YouTube URL.
+) -> YouTubeContent | None:
+    """Best-effort fetch of a YouTube URL's metadata + captions.
 
-    Returns:
-      - YouTubeContent on success
-      - a FAIL_* string (see module constants) when the library can tell
-        us WHY it failed — the caller should surface this as scrape_error
-        so the user can distinguish infra issues (IP block) from video
-        issues (captions disabled) from language issues (no English).
-      - None only when the URL isn't a YouTube URL at all (not a failure,
-        just wrong route).
+    Returns None only when the URL isn't a YouTube URL at all. In every
+    other case — transcripts disabled, IP blocked, private video, no
+    captions — returns a YouTubeContent populated with whatever we COULD
+    get (title / author / description). That way a YouTube capture
+    always has more content than a bare URL, matching what Telegram's
+    own link preview shows.
+
+    The `transcript_error` field carries the FAIL_* string when the
+    transcript part specifically failed, so the caller can surface that
+    in scrape_error while still using the metadata for content.
     """
     video_id = extract_video_id(url)
     if video_id is None:
@@ -252,25 +311,36 @@ async def fetch_transcript(
     if owned:
         client = httpx.AsyncClient(timeout=_OEMBED_TIMEOUT)
     try:
+        # All three fetches run in parallel — the transcript call is the
+        # slowest and most likely to fail, but oEmbed + description almost
+        # always succeed (different endpoint, less aggressively rate-limited).
         oembed_task = _fetch_oembed(url, client)
-        # youtube-transcript-api is synchronous; run it off the event loop
-        # so we don't block other captures' handlers.
+        description_task = _fetch_description(video_id, client)
         transcript_task = asyncio.to_thread(_fetch_transcript_sync, video_id)
-        (title, author), transcript = await asyncio.gather(oembed_task, transcript_task)
+
+        (title, author), description, transcript = await asyncio.gather(
+            oembed_task, description_task, transcript_task,
+        )
 
         if isinstance(transcript, str):
-            # Failure string — bubble up to the caller.
-            return transcript
+            # Transcript failed with a classified reason; keep metadata.
+            return YouTubeContent(
+                url=url, video_id=video_id,
+                title=title, author=author, description=description,
+                text="", language_code=None, is_auto_generated=None,
+                transcript_error=transcript,
+            )
         text, language_code, is_auto = transcript
         return YouTubeContent(
-            url=url,
-            video_id=video_id,
-            title=title,
-            author=author,
-            text=text,
-            language_code=language_code,
-            is_auto_generated=is_auto,
+            url=url, video_id=video_id,
+            title=title, author=author, description=description,
+            text=text, language_code=language_code, is_auto_generated=is_auto,
+            transcript_error=None,
         )
     finally:
         if owned:
             await client.aclose()
+
+
+# Back-compat alias for the previous name. Callers should prefer `fetch`.
+fetch_transcript = fetch

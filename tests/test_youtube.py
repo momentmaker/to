@@ -258,15 +258,26 @@ def test_sync_fetch_returns_reason_on_empty_transcript(monkeypatch):
 
 # ---- fetch_transcript (integration) --------------------------------------
 
+_WATCH_HTML = """
+<html><head>
+<meta property="og:description" content="Patrick sits down with Dylan to explore AI token dynamics.">
+</head><body></body></html>
+"""
+
+
 @pytest.mark.asyncio
-async def test_fetch_transcript_happy_path(monkeypatch):
-    """End-to-end: valid URL → oEmbed metadata + captions → YouTubeContent."""
+async def test_fetch_happy_path_returns_full_metadata_and_transcript(monkeypatch):
+    """End-to-end: valid URL → oEmbed (title+author) + watch page scrape
+    (description) + captions → fully populated YouTubeContent."""
     def _handler(request: httpx.Request) -> httpx.Response:
-        if "oembed" in str(request.url):
+        u = str(request.url)
+        if "oembed" in u:
             return httpx.Response(200, json={
                 "title": "Never Gonna Give You Up",
                 "author_name": "Rick Astley",
             })
+        if "/watch" in u:
+            return httpx.Response(200, text=_WATCH_HTML)
         return httpx.Response(404)
 
     class _FakeApi:
@@ -280,7 +291,7 @@ async def test_fetch_transcript_happy_path(monkeypatch):
 
     transport = httpx.MockTransport(_handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        out = await youtube.fetch_transcript(
+        out = await youtube.fetch(
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
             client=client,
         )
@@ -288,39 +299,52 @@ async def test_fetch_transcript_happy_path(monkeypatch):
     assert out.video_id == "dQw4w9WgXcQ"
     assert out.title == "Never Gonna Give You Up"
     assert out.author == "Rick Astley"
+    assert out.description and "dynamics" in out.description
     assert "strangers to love" in out.text
     assert out.language_code == "en"
     assert out.is_auto_generated is True
+    assert out.transcript_error is None
 
 
 @pytest.mark.asyncio
-async def test_fetch_transcript_returns_reason_string_when_captions_fail(monkeypatch):
-    """oEmbed succeeds, captions fail with a known reason → fetch_transcript
-    bubbles that reason up as a string so the caller can surface it to the
-    user. (None is reserved for 'not a YouTube URL'.)"""
+async def test_fetch_returns_metadata_when_captions_fail(monkeypatch):
+    """The critical case: transcript fetch fails (IP blocked), but oEmbed
+    and description still succeed. YouTubeContent should come back with
+    usable metadata and transcript_error set — NOT None."""
     def _handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"title": "t", "author_name": "a"})
+        u = str(request.url)
+        if "oembed" in u:
+            return httpx.Response(200, json={"title": "t", "author_name": "a"})
+        if "/watch" in u:
+            return httpx.Response(200, text=_WATCH_HTML)
+        return httpx.Response(404)
 
-    from youtube_transcript_api import TranscriptsDisabled
+    from youtube_transcript_api import IpBlocked
     class _FakeApi:
         def __init__(self): pass
         def fetch(self, vid, languages):
-            raise TranscriptsDisabled(vid)
+            raise IpBlocked(vid)
     monkeypatch.setattr("youtube_transcript_api.YouTubeTranscriptApi", _FakeApi)
 
     transport = httpx.MockTransport(_handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        out = await youtube.fetch_transcript(
+        out = await youtube.fetch(
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
             client=client,
         )
-    assert out == youtube.FAIL_TRANSCRIPTS_DISABLED
+    assert out is not None  # NOT None — metadata is still useful
+    assert out.title == "t"
+    assert out.author == "a"
+    assert out.description and "dynamics" in out.description
+    assert out.text == ""
+    assert out.language_code is None
+    assert out.transcript_error == youtube.FAIL_IP_BLOCKED
 
 
 @pytest.mark.asyncio
-async def test_fetch_transcript_survives_oembed_failure(monkeypatch):
+async def test_fetch_survives_oembed_failure(monkeypatch):
     """oEmbed 500s but captions still succeed → YouTubeContent with
-    title=None, author=None. We value the captions over the metadata."""
+    title=None, author=None, but transcript intact."""
     def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500)
 
@@ -332,29 +356,68 @@ async def test_fetch_transcript_survives_oembed_failure(monkeypatch):
 
     transport = httpx.MockTransport(_handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        out = await youtube.fetch_transcript(
+        out = await youtube.fetch(
             "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
             client=client,
         )
     assert out is not None
     assert out.title is None
     assert out.author is None
+    assert out.description is None
     assert out.text == "a line"
 
 
 @pytest.mark.asyncio
-async def test_fetch_transcript_returns_none_for_non_youtube():
+async def test_fetch_returns_none_for_non_youtube():
     async with httpx.AsyncClient() as client:
-        out = await youtube.fetch_transcript(
-            "https://example.com/page", client=client,
-        )
+        out = await youtube.fetch("https://example.com/page", client=client)
     assert out is None
+
+
+# ---- description-scrape unit tests ----------------------------------------
+
+@pytest.mark.asyncio
+async def test_fetch_description_parses_og_tag():
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=_WATCH_HTML)
+
+    transport = httpx.MockTransport(_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        desc = await youtube._fetch_description("dQw4w9WgXcQ", client)
+    assert desc and "Patrick" in desc and "Dylan" in desc
+
+
+@pytest.mark.asyncio
+async def test_fetch_description_returns_none_on_http_error():
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429)  # rate-limited
+    transport = httpx.MockTransport(_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        desc = await youtube._fetch_description("dQw4w9WgXcQ", client)
+    assert desc is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_description_truncates_very_long_bodies():
+    long_html = (
+        '<meta property="og:description" content="'
+        + ("spam link affiliate " * 500)
+        + '">'
+    )
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=long_html)
+    transport = httpx.MockTransport(_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        desc = await youtube._fetch_description("dQw4w9WgXcQ", client)
+    assert desc is not None
+    assert len(desc) <= youtube._DESCRIPTION_MAX_CHARS + 1  # +1 for "…"
+    assert desc.endswith("…")
 
 
 # ---- router integration --------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_scrape_url_routes_youtube_to_transcript():
+async def test_scrape_url_routes_youtube_with_full_payload():
     from bot.config import Settings
     from bot.ingest.router import scrape_url
     fake = youtube.YouTubeContent(
@@ -362,16 +425,18 @@ async def test_scrape_url_routes_youtube_to_transcript():
         video_id="dQw4w9WgXcQ",
         title="Never Gonna Give You Up",
         author="Rick Astley",
+        description="The classic.",
         text="we're no strangers to love",
         language_code="en",
         is_auto_generated=False,
+        transcript_error=None,
     )
     settings = Settings(
         TELEGRAM_BOT_TOKEN="x", TELEGRAM_OWNER_ID=1, DOB="1990-01-01",
         ANTHROPIC_API_KEY="k",
     )
     with patch(
-        "bot.ingest.router.youtube.fetch_transcript",
+        "bot.ingest.router.youtube.fetch",
         AsyncMock(return_value=fake),
     ) as m:
         result = await scrape_url(
@@ -380,41 +445,79 @@ async def test_scrape_url_routes_youtube_to_transcript():
     m.assert_awaited_once()
     assert result.source == "youtube"
     assert result.error is None
-    assert "Never Gonna Give You Up" in result.content
-    assert "Rick Astley" in result.content
-    assert "strangers to love" in result.content
+    # Content has title, author, description, and transcript — in that order.
+    for expected in ("Never Gonna Give You Up", "Rick Astley", "classic", "strangers to love"):
+        assert expected in result.content
     assert result.payload["video_id"] == "dQw4w9WgXcQ"
     assert result.payload["title"] == "Never Gonna Give You Up"
+    assert result.payload["description"] == "The classic."
     assert result.payload["is_auto_generated"] is False
 
 
 @pytest.mark.asyncio
-async def test_scrape_url_youtube_surfaces_specific_failure_reasons():
-    """The router must propagate the classified failure reason verbatim
-    into scrape_error so the user can tell 'YouTube blocked our IP' from
-    'this video has no captions' from 'this video is private'.
-    """
+async def test_scrape_url_youtube_uses_metadata_when_transcript_blocked():
+    """Key regression for the IP-blocked case: even when transcripts fail,
+    we still get a useful capture from title+description. No scrape_error
+    should be surfaced (the capture isn't 'thin', it has real content)."""
     from bot.config import Settings
     from bot.ingest.router import scrape_url
+    fake = youtube.YouTubeContent(
+        url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        video_id="dQw4w9WgXcQ",
+        title="The Supply and Demand of AI Tokens",
+        author="Invest Like the Best",
+        description="Patrick sits down with Dylan Patel to explore AI token dynamics.",
+        text="",
+        language_code=None,
+        is_auto_generated=None,
+        transcript_error=youtube.FAIL_IP_BLOCKED,
+    )
     settings = Settings(
         TELEGRAM_BOT_TOKEN="x", TELEGRAM_OWNER_ID=1, DOB="1990-01-01",
         ANTHROPIC_API_KEY="k",
     )
-
-    for reason in (
-        youtube.FAIL_IP_BLOCKED,
-        youtube.FAIL_TRANSCRIPTS_DISABLED,
-        youtube.FAIL_NO_TRANSCRIPT,
-        youtube.FAIL_VIDEO_UNAVAILABLE,
-        youtube.FAIL_UNKNOWN,
+    with patch(
+        "bot.ingest.router.youtube.fetch",
+        AsyncMock(return_value=fake),
     ):
-        with patch(
-            "bot.ingest.router.youtube.fetch_transcript",
-            AsyncMock(return_value=reason),
-        ):
-            result = await scrape_url(
-                "https://www.youtube.com/watch?v=dQw4w9WgXcQ", settings=settings,
-            )
-        assert result.source == "youtube"
-        assert result.content == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-        assert result.error == reason
+        result = await scrape_url(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ", settings=settings,
+        )
+    assert result.source == "youtube"
+    # No scrape_error — we HAVE useful metadata, the capture is fine.
+    assert result.error is None
+    for expected in ("Supply and Demand", "Invest Like the Best", "Dylan Patel"):
+        assert expected in result.content
+    assert result.payload["title"] == "The Supply and Demand of AI Tokens"
+    assert result.payload["description"] is not None
+    # Transcript error is STILL preserved in payload for diagnostics,
+    # just not surfaced as scrape_error since we have metadata.
+    assert result.payload.get("text") == ""
+
+
+@pytest.mark.asyncio
+async def test_scrape_url_youtube_surfaces_error_only_when_truly_empty():
+    """If transcript fails AND we got no title AND no description (total
+    blackout), THEN surface the classified error in scrape_error."""
+    from bot.config import Settings
+    from bot.ingest.router import scrape_url
+    fake = youtube.YouTubeContent(
+        url="https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        video_id="dQw4w9WgXcQ",
+        title=None, author=None, description=None,
+        text="", language_code=None, is_auto_generated=None,
+        transcript_error=youtube.FAIL_IP_BLOCKED,
+    )
+    settings = Settings(
+        TELEGRAM_BOT_TOKEN="x", TELEGRAM_OWNER_ID=1, DOB="1990-01-01",
+        ANTHROPIC_API_KEY="k",
+    )
+    with patch(
+        "bot.ingest.router.youtube.fetch",
+        AsyncMock(return_value=fake),
+    ):
+        result = await scrape_url(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ", settings=settings,
+        )
+    assert result.source == "youtube"
+    assert result.error == youtube.FAIL_IP_BLOCKED
