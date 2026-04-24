@@ -141,17 +141,20 @@ python3 - <<'PY'
 from pathlib import Path
 p = Path("sparks.md")
 existing = p.read_text(encoding="utf-8") if p.exists() else "# sparks\n\n"
-# Ensure exactly one trailing newline before appending, then append the
-# new line followed by a newline so the NEXT day's append also lands
-# on its own line.
-normalized = existing.rstrip("\n") + "\n"
+# Markdown needs a BLANK line between entries — a single newline is a
+# soft-break and GitHub renders the two lines as one paragraph. Strip
+# any trailing newlines and re-add exactly two, then append the new
+# line with a single trailing newline (the NEXT day's append will add
+# its own blank line on top of that).
+normalized = existing.rstrip("\n") + "\n\n"
 new_line = "YYYY-MM-DD — <the line>\n"
 p.write_text(normalized + new_line, encoding="utf-8")
 PY
 ```
 
 Substitute `YYYY-MM-DD` and `<the line>` with the actual values before
-running. Every spark line MUST occupy its own line in the file.
+running. Every spark line MUST occupy its own paragraph in the rendered
+file — a single `\n` between two non-empty lines is NOT enough.
 
 ## Step 5 — Detect echoes
 
