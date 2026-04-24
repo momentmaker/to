@@ -116,7 +116,7 @@ async def ask_why_question(
 ) -> str:
     """LLM generates the orchurator-voiced question. Never raises — falls back
     to a static question if the LLM call fails."""
-    user_content = f"Title: {title or '(none)'}\nURL: {url}"
+    user_content = f"Title: {title}" if title else f"URL: {url}"
     try:
         response = await call_llm(
             purpose="why",

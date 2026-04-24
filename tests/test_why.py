@@ -319,6 +319,8 @@ async def test_url_save_extracts_title_from_nested_hn_payload(conn):
     # Check the LLM received the HN title, not "(none)"
     joined = "\n".join(seen_titles)
     assert "An HN Thread" in joined
+    # And the URL is withheld when we have a title, so the model can't quote it.
+    assert "news.ycombinator.com" not in joined
 
 
 @pytest.mark.asyncio
