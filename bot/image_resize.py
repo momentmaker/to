@@ -26,7 +26,7 @@ def compress_for_asset(data: bytes) -> bytes:
     try:
         img = Image.open(io.BytesIO(data))
         img.load()
-    except (UnidentifiedImageError, OSError) as e:
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as e:
         raise ValueError(f"not a valid image: {e}") from e
 
     img = ImageOps.exif_transpose(img)

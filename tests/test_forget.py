@@ -81,6 +81,91 @@ async def test_forget_primary_calls_github_delete_when_configured(conn):
 
 
 @pytest.mark.asyncio
+async def test_forget_image_also_deletes_asset_from_github(conn):
+    """Image captures put both an .md and a sibling JPEG on GitHub. Forget
+    must remove BOTH, otherwise /forget on a photo leaves the JPEG behind."""
+    cid = await _insert(
+        conn,
+        kind="image",
+        source="telegram",
+        raw="caption",
+        processed={"title": "On The Train"},
+        asset_bytes=b"\xff\xd8\xff\xe0pretend-jpeg",
+        asset_mime="image/jpeg",
+        telegram_msg_id=42,
+    )
+    await conn.execute(
+        "UPDATE captures SET github_sha = 'md-sha' WHERE id = ?", (cid,),
+    )
+    await conn.commit()
+
+    delete_calls: list[dict] = []
+
+    async def _fake_delete(**kwargs):
+        delete_calls.append(kwargs)
+        return True
+
+    async def _fake_fetch_sha(**kwargs):
+        return "asset-live-sha"
+
+    with patch("bot.github_sync.delete_file", AsyncMock(side_effect=_fake_delete)), \
+         patch("bot.github_sync.fetch_file_sha", AsyncMock(side_effect=_fake_fetch_sha)):
+        result = await forget.forget_capture(conn, cid, settings=_settings())
+
+    assert result is not None
+    # Two deletes: one for .md, one for the asset
+    paths = sorted(c["path"] for c in delete_calls)
+    assert any(p.endswith(".md") for p in paths)
+    assert any(p.endswith(".jpg") and "/assets/" in p for p in paths)
+    # Asset delete used the live sha, not the row's github_sha
+    asset_call = next(c for c in delete_calls if c["path"].endswith(".jpg"))
+    assert asset_call["sha"] == "asset-live-sha"
+
+
+@pytest.mark.asyncio
+async def test_forget_image_skips_asset_delete_when_asset_missing_on_github(conn):
+    """If the asset never made it to GitHub (fetch_file_sha returns None),
+    just skip — no delete call to make. The .md delete still happens."""
+    cid = await _insert(
+        conn, kind="image", source="telegram", raw="caption",
+        asset_bytes=b"\xff\xd8\xff\xe0", asset_mime="image/jpeg",
+        telegram_msg_id=43,
+    )
+    await conn.execute(
+        "UPDATE captures SET github_sha = 'md-sha' WHERE id = ?", (cid,),
+    )
+    await conn.commit()
+
+    delete = AsyncMock(return_value=True)
+    fetch_sha = AsyncMock(return_value=None)
+    with patch("bot.github_sync.delete_file", delete), \
+         patch("bot.github_sync.fetch_file_sha", fetch_sha):
+        result = await forget.forget_capture(conn, cid, settings=_settings())
+
+    assert result is not None
+    fetch_sha.assert_awaited_once()
+    # Only one delete: the .md. No asset delete since fetch returned None.
+    assert delete.await_count == 1
+    assert delete.await_args.kwargs["path"].endswith(".md")
+
+
+@pytest.mark.asyncio
+async def test_forget_text_capture_does_not_call_fetch_file_sha(conn):
+    """Non-image captures must not even attempt the asset cleanup path."""
+    cid = await _insert(conn, kind="text", raw="just words", telegram_msg_id=44)
+    await conn.execute(
+        "UPDATE captures SET github_sha = 'md-sha' WHERE id = ?", (cid,),
+    )
+    await conn.commit()
+
+    fetch_sha = AsyncMock(return_value="should-not-be-called")
+    with patch("bot.github_sync.delete_file", AsyncMock(return_value=True)), \
+         patch("bot.github_sync.fetch_file_sha", fetch_sha):
+        await forget.forget_capture(conn, cid, settings=_settings())
+    fetch_sha.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_forget_primary_cascades_to_whys(conn):
     parent = await _insert(conn, kind="url", url="https://ex.com", telegram_msg_id=1)
     why_a = await _insert(

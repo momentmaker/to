@@ -73,6 +73,27 @@ async def _forget_primary(
         except Exception:
             log.exception("forget: GitHub delete failed for capture %s", capture_id)
 
+        # For image captures, the .md references a sibling asset under
+        # assets/. Remove that too — otherwise /forget leaves a JPEG behind
+        # that re-appears whenever someone browses the week directory.
+        asset_path = markdown_out.asset_path_for(row)
+        if asset_path:
+            try:
+                asset_sha = await github_sync.fetch_file_sha(
+                    settings=settings, path=asset_path,
+                )
+                if asset_sha:
+                    await github_sync.delete_file(
+                        settings=settings,
+                        path=asset_path,
+                        sha=asset_sha,
+                        message=f"forget: asset {row['local_date']} (capture {capture_id})",
+                    )
+            except Exception:
+                log.exception(
+                    "forget: GitHub asset delete failed for capture %s", capture_id,
+                )
+
     # Cascade: delete all inline children (whys and highlights live inside
     # the parent's file, which is about to disappear).
     async with conn.execute(

@@ -54,6 +54,8 @@ async def fetch_file(
     """GET a file from the repo. Returns (utf-8 content, sha) or None on 404.
 
     Raises on auth/repo errors so callers don't confuse them with "not found".
+    Use fetch_file_sha for binary files — calling .decode('utf-8') on a JPEG
+    will blow up.
     """
     owner_repo = settings.GITHUB_REPO
     url = f"{_API_BASE}/repos/{owner_repo}/contents/{path}"
@@ -72,6 +74,34 @@ async def fetch_file(
         data = resp.json()
         content = base64.b64decode(data["content"]).decode("utf-8")
         return content, str(data["sha"])
+    finally:
+        if owned:
+            await client.aclose()
+
+
+async def fetch_file_sha(
+    *,
+    settings: Settings,
+    path: str,
+    client: httpx.AsyncClient | None = None,
+) -> str | None:
+    """GET just the sha of a file (any type). Returns None on 404. Skips the
+    body decode, so safe for binary files like image assets."""
+    owner_repo = settings.GITHUB_REPO
+    url = f"{_API_BASE}/repos/{owner_repo}/contents/{path}"
+    owned = client is None
+    if owned:
+        client = httpx.AsyncClient(timeout=_TIMEOUT)
+    try:
+        resp = await client.get(
+            url,
+            headers=_headers(settings),
+            params={"ref": settings.GITHUB_BRANCH},
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return str(resp.json()["sha"])
     finally:
         if owned:
             await client.aclose()
@@ -214,6 +244,45 @@ async def put_binary_file(
     )
 
 
+async def _put_asset_idempotent(
+    *,
+    settings: Settings,
+    path: str,
+    content: bytes,
+    message: str,
+    client: httpx.AsyncClient | None,
+) -> str:
+    """Upload a photo asset, tolerating "file already exists" from a prior
+    partial sync. We don't track an asset sha per capture, so on 422 we
+    fetch the live sha and retry once. Asset content is deterministic per
+    (capture id, slug), so the second PUT is safe.
+    """
+    try:
+        return await put_binary_file(
+            settings=settings, path=path, content=content,
+            message=message, client=client,
+        )
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code != 422:
+            raise
+        # 422 = sha mismatch / file exists. Fetch existing sha and retry.
+        # Use fetch_file_sha to avoid the utf-8 decode in fetch_file (would
+        # blow up on a JPEG).
+        existing_sha = await fetch_file_sha(
+            settings=settings, path=path, client=client,
+        )
+        if existing_sha is None:
+            # Race: file gone between PUT and GET. Try a clean PUT once more.
+            return await put_binary_file(
+                settings=settings, path=path, content=content,
+                message=message, client=client,
+            )
+        return await put_binary_file(
+            settings=settings, path=path, content=content,
+            message=message, existing_sha=existing_sha, client=client,
+        )
+
+
 async def _fetch_rows(conn: aiosqlite.Connection, query: str, args: tuple) -> list[aiosqlite.Row]:
     async with conn.execute(query, args) as cur:
         return list(await cur.fetchall())
@@ -276,8 +345,8 @@ async def push_capture(
     # Push the photo asset (if any) BEFORE the .md, so a viewer following
     # the .md's `asset = "..."` reference never lands on a missing file.
     asset_path = asset_path_for(row)
-    if asset_path and row["asset_bytes"]:
-        await put_binary_file(
+    if asset_path:
+        await _put_asset_idempotent(
             settings=settings,
             path=asset_path,
             content=bytes(row["asset_bytes"]),

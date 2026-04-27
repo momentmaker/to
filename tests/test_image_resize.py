@@ -91,3 +91,14 @@ def test_returns_bytes_unchanged_type():
 def test_rejects_non_image_input():
     with pytest.raises(ValueError):
         compress_for_asset(b"not an image at all")
+
+
+def test_rejects_decompression_bomb(monkeypatch):
+    """A pathological image larger than Pillow's MAX_IMAGE_PIXELS is treated
+    as 'not a recognizable image' rather than crashing the photo handler."""
+    src = _make_image(2000, 2000, fmt="PNG")
+    # Force any non-trivial image to count as a bomb so we don't have to
+    # generate gigabytes of test bytes.
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+    with pytest.raises(ValueError):
+        compress_for_asset(src)

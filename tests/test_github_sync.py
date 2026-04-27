@@ -187,6 +187,37 @@ async def test_fetch_file_returns_none_on_404():
 
 
 @pytest.mark.asyncio
+async def test_fetch_file_sha_returns_sha_for_binary_payload():
+    """A binary asset on GitHub returns content as base64 of the raw bytes.
+    fetch_file_sha must NOT try to UTF-8 decode that — it just needs the sha."""
+    jpeg_bytes = bytes([0xff, 0xd8, 0xff, 0xe0]) + bytes(range(200))
+    body = base64.b64encode(jpeg_bytes).decode("ascii")
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"content": body, "sha": "binary-sha"})
+
+    transport = httpx.MockTransport(_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        sha = await github_sync.fetch_file_sha(
+            settings=_settings(), path="2026-w17/assets/x.jpg", client=client,
+        )
+    assert sha == "binary-sha"
+
+
+@pytest.mark.asyncio
+async def test_fetch_file_sha_returns_none_on_404():
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    transport = httpx.MockTransport(_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        sha = await github_sync.fetch_file_sha(
+            settings=_settings(), path="missing", client=client,
+        )
+    assert sha is None
+
+
+@pytest.mark.asyncio
 async def test_fetch_file_raises_on_auth_error():
     def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401, json={"message": "Bad credentials"})
@@ -367,6 +398,56 @@ async def test_push_capture_image_pushes_asset_then_md(conn):
     assert "/assets/" in asset_path
     assert md_path.endswith(".md")
     assert asset_path.split("/")[0] == md_path.split("/")[0]  # same week dir
+
+
+@pytest.mark.asyncio
+async def test_push_capture_recovers_when_asset_already_exists(conn):
+    """If a previous push partially succeeded (asset uploaded, .md failed),
+    the next retry sees the asset already on GitHub. We don't track an
+    asset sha, so push_capture must fetch it and PUT-update instead of
+    bailing on the 422."""
+    from unittest.mock import AsyncMock, patch
+
+    cid = await _insert(
+        conn, kind="image", source="telegram", raw="cap",
+        processed={"title": "Photo"},
+        asset_bytes=b"\xff\xd8\xff\xe0pretend-jpeg",
+        asset_mime="image/jpeg",
+        telegram_msg_id=901,
+    )
+    await conn.execute("UPDATE captures SET status = 'processed' WHERE id = ?", (cid,))
+    await conn.commit()
+
+    binary_calls: list[dict] = []
+    md_calls: list[dict] = []
+
+    async def _fake_put_binary(**kwargs):
+        binary_calls.append(kwargs)
+        if len(binary_calls) == 1:
+            # first attempt: file already exists on GitHub → 422
+            request = httpx.Request("PUT", "https://api.github.com/x")
+            response = httpx.Response(422, json={"message": "sha mismatch"}, request=request)
+            raise httpx.HTTPStatusError("422", request=request, response=response)
+        return "asset-sha-2"
+
+    async def _fake_fetch_sha(**kwargs):
+        return "live-asset-sha"
+
+    async def _fake_put_file(**kwargs):
+        md_calls.append(kwargs)
+        return "md-sha"
+
+    with patch("bot.github_sync.put_binary_file", AsyncMock(side_effect=_fake_put_binary)), \
+         patch("bot.github_sync.fetch_file_sha", AsyncMock(side_effect=_fake_fetch_sha)), \
+         patch("bot.github_sync.put_file", AsyncMock(side_effect=_fake_put_file)):
+        ok = await github_sync.push_capture(cid, settings=_settings(), conn=conn)
+    assert ok is True
+    # Two binary PUTs: first failed (no sha), second used live sha
+    assert len(binary_calls) == 2
+    assert binary_calls[0].get("existing_sha") is None
+    assert binary_calls[1]["existing_sha"] == "live-asset-sha"
+    # And .md still got pushed
+    assert len(md_calls) == 1
 
 
 @pytest.mark.asyncio
