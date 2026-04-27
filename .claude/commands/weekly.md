@@ -145,7 +145,7 @@ This is a cumulative file. Read-modify-write:
 - If it doesn't exist: ask the user for their DOB and weekStart preference (mon/sun) and bootstrap a minimal state (see `scripts/weekly_digest.py:update_fz_backup` in the `to` repo for the exact shape).
 - If it exists:
   1. Parse as JSON.
-  2. Compute `fz_week_idx` as `(local_date_of_any_day_in_week - dob).days // 7`. The DOB is in `state.dob` (ISO `YYYY-MM-DD`).
+  2. Read `fz_week_idx` straight from any capture's TOML frontmatter (`week_idx`). The bot already computed it correctly per `local_date` at capture time. **Do NOT recompute it from the ISO Monday** — for any non-Monday DOB, iso-Mon falls in the previous fz-week and you'll anchor the digest one hex behind the captures.
   3. Set `state.weeks[str(fz_week_idx)] = {"mark": <mark>, "whisper": <whisper>, "markedAt": <now ISO UTC, seconds, Z suffix>}`.
   4. Insert `fz_week_idx` into `state.anchors` (keep sorted, dedup).
   5. Update `state.exportedAt` to the same `now` string.
@@ -155,23 +155,33 @@ The easiest way is to delegate to the existing helper. Example (substitute the b
 
 ```bash
 python3 - <<'PY'
-import json, sys
-from datetime import date, datetime, timezone
+import re, sys
+from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, '<absolute-path-to-to-repo>')
 from scripts.weekly_digest import update_fz_backup
 
-backup = Path('<captures-repo>/fz-ax-backup.json')
+captures_root = Path('<captures-repo>')
+week = '<week>'  # e.g. "2026-w17"
+
+# Pull fz_week_idx from any capture's frontmatter — authoritative, DOB-agnostic.
+fz_week_idx = None
+for md in sorted((captures_root / week).glob("*.md")):
+    if md.name == "digest.md":
+        continue
+    m = re.search(r'^week_idx\s*=\s*(\d+)\s*$', md.read_text(encoding="utf-8"), re.M)
+    if m:
+        fz_week_idx = int(m.group(1))
+        break
+if fz_week_idx is None:
+    print("no capture with week_idx in frontmatter; cannot anchor digest")
+    sys.exit(1)
+
+backup = captures_root / 'fz-ax-backup.json'
 if not backup.exists():
     print("no fz-ax-backup.json — pass dob + week_start on first run")
     sys.exit(1)
 
-state = json.loads(backup.read_text(encoding="utf-8"))
-dob = date.fromisoformat(state["state"]["dob"])
-# Derive any day in the target ISO week: parse "YYYY-WNN" → (year, week).
-iso_year, iso_week = <iso_year>, <iso_week>  # e.g. 2026, 17
-monday = date.fromisocalendar(iso_year, iso_week, 1)
-fz_week_idx = (monday - dob).days // 7
 now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 update_fz_backup(
