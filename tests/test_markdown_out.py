@@ -7,7 +7,9 @@ from datetime import date
 import pytest
 
 from bot import db as db_mod
-from bot.markdown_out import file_path_for, make_slug, render_capture_markdown
+from bot.markdown_out import (
+    asset_path_for, file_path_for, make_slug, render_capture_markdown,
+)
 
 
 def test_make_slug_basic_and_edge_cases():
@@ -213,3 +215,65 @@ async def test_file_path_includes_capture_id_for_uniqueness(conn):
     row1 = await _insert(conn, raw="identical")
     row2 = await _insert(conn, raw="identical", telegram_msg_id=99)  # different msg_id
     assert file_path_for(row1) != file_path_for(row2)
+
+
+@pytest.mark.asyncio
+async def test_image_with_asset_bytes_emits_relative_asset_in_frontmatter(conn):
+    row = await _insert(
+        conn,
+        kind="image",
+        source="telegram",
+        raw="caption text",
+        processed={"title": "Sunset From Roof"},
+        asset_bytes=b"\xff\xd8\xff\xe0fakejpeg",
+        asset_mime="image/jpeg",
+    )
+    out = render_capture_markdown(row)
+    fm_end = out.index("\n+++\n", 3)
+    meta = tomllib.loads(out[4:fm_end + 1])
+
+    expected = f"assets/{row['id']:06d}-sunset-from-roof.jpg"
+    assert meta["asset"] == expected
+
+
+@pytest.mark.asyncio
+async def test_image_without_asset_bytes_omits_asset_key(conn):
+    """Legacy image rows captured before the asset feature shipped don't have
+    asset_bytes — the renderer must not crash and must omit the key entirely."""
+    row = await _insert(conn, kind="image", source="telegram", raw="legacy caption")
+    out = render_capture_markdown(row)
+    fm_end = out.index("\n+++\n", 3)
+    meta = tomllib.loads(out[4:fm_end + 1])
+    assert "asset" not in meta
+
+
+@pytest.mark.asyncio
+async def test_non_image_kinds_never_get_asset_field(conn):
+    """asset is only meaningful for image captures."""
+    row = await _insert(conn, kind="text", raw="just words")
+    out = render_capture_markdown(row)
+    fm_end = out.index("\n+++\n", 3)
+    meta = tomllib.loads(out[4:fm_end + 1])
+    assert "asset" not in meta
+
+
+@pytest.mark.asyncio
+async def test_asset_path_for_returns_full_repo_path(conn):
+    row = await _insert(
+        conn, kind="image", source="telegram",
+        processed={"title": "On The Train"},
+        asset_bytes=b"\xff\xd8\xff\xe0", asset_mime="image/jpeg",
+    )
+    md_path = file_path_for(row)
+    asset_path = asset_path_for(row)
+    assert asset_path is not None
+    week_dir = md_path.split("/", 1)[0]
+    assert asset_path == f"{week_dir}/assets/{row['id']:06d}-on-the-train.jpg"
+
+
+@pytest.mark.asyncio
+async def test_asset_path_for_returns_none_without_asset(conn):
+    row = await _insert(conn, kind="image", raw="no asset stored")
+    assert asset_path_for(row) is None
+    row2 = await _insert(conn, kind="text", raw="not even an image")
+    assert asset_path_for(row2) is None

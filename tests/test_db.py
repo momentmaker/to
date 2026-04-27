@@ -143,3 +143,36 @@ async def test_init_schema_is_idempotent(conn, dob, tz_name):
     await db.init_schema(conn)
     cid = await db.insert_capture(conn, kind="text", raw="post-reinit", dob=dob, tz_name=tz_name)
     assert cid is not None
+
+
+async def test_insert_capture_persists_asset_bytes_and_mime(conn, dob, tz_name):
+    payload = b"\xff\xd8\xff\xe0jpeg-ish-bytes"
+    cid = await db.insert_capture(
+        conn,
+        kind="image",
+        raw="caption",
+        source="telegram",
+        asset_bytes=payload,
+        asset_mime="image/jpeg",
+        dob=dob,
+        tz_name=tz_name,
+    )
+    assert cid is not None
+    async with conn.execute(
+        "SELECT asset_bytes, asset_mime FROM captures WHERE id = ?", (cid,)
+    ) as cur:
+        row = await cur.fetchone()
+    assert bytes(row["asset_bytes"]) == payload
+    assert row["asset_mime"] == "image/jpeg"
+
+
+async def test_insert_capture_asset_columns_default_null(conn, dob, tz_name):
+    cid = await db.insert_capture(
+        conn, kind="text", raw="no asset here", dob=dob, tz_name=tz_name,
+    )
+    async with conn.execute(
+        "SELECT asset_bytes, asset_mime FROM captures WHERE id = ?", (cid,)
+    ) as cur:
+        row = await cur.fetchone()
+    assert row["asset_bytes"] is None
+    assert row["asset_mime"] is None

@@ -71,6 +71,17 @@ def make_slug(text: str) -> str:
     return s or "untitled"
 
 
+def _week_dir(row: Any) -> str:
+    return row["iso_week_key"].replace("W", "w")
+
+
+def _slug_for(row: Any) -> str:
+    processed = _parse_json(_row_get(row, "processed"))
+    title = (processed or {}).get("title") if processed else ""
+    basis = title or (_row_get(row, "raw") or "") or "untitled"
+    return make_slug(basis)
+
+
 def file_path_for(row: Any) -> str:
     """GitHub path: `YYYY-wNN/YYYY-MM-DD-...md`. Plan mandates lowercase 'w'.
 
@@ -78,20 +89,27 @@ def file_path_for(row: Any) -> str:
     `YYYY-MM-DD-reflection.md`. There's only one reflection per day, so no
     capture id is needed to disambiguate.
     """
-    week_key = row["iso_week_key"]       # "2026-W16"
-    week_lower = week_key.replace("W", "w")
+    week_lower = _week_dir(row)
     local_date = row["local_date"]       # "2026-04-21"
 
     if row["kind"] == "reflection":
         return f"{week_lower}/{local_date}-reflection.md"
 
-    processed = _parse_json(_row_get(row, "processed"))
-    title = (processed or {}).get("title") if processed else ""
-    basis = title or (_row_get(row, "raw") or "") or "untitled"
-    slug = make_slug(basis)
-
     # Include capture id so multiple captures in the same day don't collide.
-    return f"{week_lower}/{local_date}-{row['id']:06d}-{slug}.md"
+    return f"{week_lower}/{local_date}-{row['id']:06d}-{_slug_for(row)}.md"
+
+
+def asset_path_for(row: Any) -> str | None:
+    """GitHub path for the photo asset of an image capture, or None if the
+    row has no stored asset bytes (legacy or non-image rows).
+
+    Path: `YYYY-wNN/assets/<id>-<slug>.jpg`, sibling to the capture's .md.
+    """
+    if row["kind"] != "image":
+        return None
+    if not _row_get(row, "asset_bytes"):
+        return None
+    return f"{_week_dir(row)}/assets/{row['id']:06d}-{_slug_for(row)}.jpg"
 
 
 def render_capture_markdown(
@@ -121,12 +139,18 @@ def render_capture_markdown(
     parent_id = _row_get(row, "parent_id")
     if parent_id:
         fm["parent_id"] = parent_id
-    # Breadcrumb back to the original Telegram message. Useful for image
-    # captures — we don't store the photo file in the repo, so this is how
-    # you re-fetch the original from your chat history.
+    # Breadcrumb back to the original Telegram message — useful for image
+    # captures since the stored asset is a downscaled JPEG; this lets you
+    # re-fetch the full-fidelity original from chat history if needed.
     tg_msg_id = _row_get(row, "telegram_msg_id")
     if tg_msg_id:
         fm["telegram_msg_id"] = tg_msg_id
+
+    # For image captures, reference the compressed asset stored alongside
+    # the .md (path is relative to the .md's directory).
+    asset_path = asset_path_for(row)
+    if asset_path:
+        fm["asset"] = asset_path.split("/", 1)[1]  # strip leading "<week>/"
 
     processed = _parse_json(_row_get(row, "processed")) or {}
     title = processed.get("title")

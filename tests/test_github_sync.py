@@ -293,6 +293,108 @@ async def test_push_capture_for_why_updates_parent_file_inline(conn):
 
 
 @pytest.mark.asyncio
+async def test_put_binary_file_base64_encodes_bytes_directly():
+    """Binary uploads (photos) must NOT pass through .encode('utf-8') —
+    that path corrupts non-text bytes. put_binary_file takes bytes and
+    base64-encodes them straight."""
+    captured = {}
+    payload = bytes(range(256))  # all byte values, including non-utf8
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(201, json={"content": {"sha": "asset-sha"}})
+
+    transport = httpx.MockTransport(_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        sha = await github_sync.put_binary_file(
+            settings=_settings(),
+            path="2026-w17/assets/000123-x.jpg",
+            content=payload,
+            message="asset",
+            client=client,
+        )
+    assert sha == "asset-sha"
+    assert "/2026-w17/assets/000123-x.jpg" in captured["url"]
+    assert base64.b64decode(captured["body"]["content"]) == payload
+
+
+@pytest.mark.asyncio
+async def test_push_capture_image_pushes_asset_then_md(conn):
+    """For image rows with asset_bytes, the asset must be PUT before the .md
+    so a viewer following the .md never lands on a missing asset."""
+    from unittest.mock import AsyncMock, patch
+
+    cid = await _insert(
+        conn,
+        kind="image",
+        source="telegram",
+        raw="caption",
+        processed={"title": "On The Train"},
+        asset_bytes=b"\xff\xd8\xff\xe0fake-jpeg-data",
+        asset_mime="image/jpeg",
+        telegram_msg_id=777,
+    )
+    assert cid is not None
+    await conn.execute(
+        "UPDATE captures SET status = 'processed' WHERE id = ?", (cid,)
+    )
+    await conn.commit()
+
+    call_log: list[tuple[str, str]] = []
+
+    async def _fake_put_file(**kwargs):
+        call_log.append(("md", kwargs["path"]))
+        return "md-sha"
+
+    async def _fake_put_binary(**kwargs):
+        call_log.append(("asset", kwargs["path"]))
+        # asset bytes flow through unchanged
+        assert kwargs["content"] == b"\xff\xd8\xff\xe0fake-jpeg-data"
+        return "asset-sha"
+
+    with patch("bot.github_sync.put_file", AsyncMock(side_effect=_fake_put_file)), \
+         patch("bot.github_sync.put_binary_file", AsyncMock(side_effect=_fake_put_binary)):
+        ok = await github_sync.push_capture(cid, settings=_settings(), conn=conn)
+    assert ok is True
+
+    # Asset first, then md
+    assert [c[0] for c in call_log] == ["asset", "md"]
+    # Paths align: same week, same id+slug stem, different dir + extension
+    asset_path = call_log[0][1]
+    md_path = call_log[1][1]
+    assert asset_path.endswith(".jpg")
+    assert "/assets/" in asset_path
+    assert md_path.endswith(".md")
+    assert asset_path.split("/")[0] == md_path.split("/")[0]  # same week dir
+
+
+@pytest.mark.asyncio
+async def test_push_capture_image_without_asset_bytes_skips_binary_push(conn):
+    """Legacy image rows captured before this feature shipped have no asset
+    bytes — push only the .md, never call put_binary_file."""
+    from unittest.mock import AsyncMock, patch
+
+    cid = await _insert(
+        conn, kind="image", source="telegram", raw="legacy",
+        telegram_msg_id=778,
+    )
+    await conn.execute(
+        "UPDATE captures SET status = 'processed' WHERE id = ?", (cid,)
+    )
+    await conn.commit()
+
+    put = AsyncMock(return_value="md-sha")
+    binary = AsyncMock(return_value="asset-sha")
+    with patch("bot.github_sync.put_file", put), \
+         patch("bot.github_sync.put_binary_file", binary):
+        ok = await github_sync.push_capture(cid, settings=_settings(), conn=conn)
+    assert ok is True
+    binary.assert_not_awaited()
+    put.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_unsynced_capture_ids_parents_first(conn):
     """nightly_sync must push parents before orphaned whys so the parent file
     exists when the why inline-update tries to happen.

@@ -11,7 +11,7 @@ from typing import Any
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from bot import db, forget, github_sync, oracle, process, reflection, scheduler as sched_mod, tweet as tweet_mod, why
+from bot import db, forget, github_sync, image_resize, oracle, process, reflection, scheduler as sched_mod, tweet as tweet_mod, why
 from bot.config import Settings
 from bot.digest import fz_state as fz_state_mod
 from bot.digest import validate as digest_validate
@@ -937,6 +937,16 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("could not fetch the photo. try again.")
         return
 
+    # Compress the photo into a small JPEG asset. The full-fidelity bytes go
+    # to vision; the compressed copy gets saved alongside the .md as proof
+    # of artifact. If compression fails (corrupt/unrecognized image), keep
+    # going — the textual capture is still useful on its own.
+    asset_bytes: bytes | None = None
+    try:
+        asset_bytes = image_resize.compress_for_asset(image_bytes)
+    except ValueError:
+        log.warning("photo compression skipped: not a recognizable image")
+
     caption = update.message.caption or ""
     payload: dict[str, Any] = {"caption": caption} if caption else {}
     forward = _forward_origin_payload(update.message)
@@ -968,6 +978,8 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
         raw=caption or None,
         payload=payload or None,
         telegram_msg_id=update.message.message_id,
+        asset_bytes=asset_bytes,
+        asset_mime="image/jpeg" if asset_bytes else None,
         dob=dob,
         tz_name=settings.TIMEZONE,
     )

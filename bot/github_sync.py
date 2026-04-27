@@ -21,7 +21,7 @@ import aiosqlite
 import httpx
 
 from bot.config import Settings
-from bot.markdown_out import file_path_for, render_capture_markdown
+from bot.markdown_out import asset_path_for, file_path_for, render_capture_markdown
 
 log = logging.getLogger(__name__)
 
@@ -125,25 +125,22 @@ async def delete_file(
             await client.aclose()
 
 
-async def put_file(
+async def _put_raw(
     *,
     settings: Settings,
     path: str,
-    content: str,
+    content_b64: str,
     message: str,
-    existing_sha: str | None = None,
-    client: httpx.AsyncClient | None = None,
+    existing_sha: str | None,
+    client: httpx.AsyncClient | None,
 ) -> str:
-    """PUT file contents. Returns the new sha.
-
-    Retries with exponential backoff on 5xx and timeouts. Does NOT retry on
-    4xx (auth failure, sha conflict) — those need human intervention.
-    """
+    """Shared PUT-with-retries against the contents API. Caller supplies
+    already-base64-encoded content (so this works for both text and binary)."""
     owner_repo = settings.GITHUB_REPO
     url = f"{_API_BASE}/repos/{owner_repo}/contents/{path}"
     body: dict[str, Any] = {
         "message": message,
-        "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        "content": content_b64,
         "branch": settings.GITHUB_BRANCH,
     }
     if existing_sha:
@@ -174,6 +171,47 @@ async def put_file(
     finally:
         if owned:
             await client.aclose()
+
+
+async def put_file(
+    *,
+    settings: Settings,
+    path: str,
+    content: str,
+    message: str,
+    existing_sha: str | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> str:
+    """PUT a text file. Returns the new sha. UTF-8 encodes before base64."""
+    return await _put_raw(
+        settings=settings,
+        path=path,
+        content_b64=base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        message=message,
+        existing_sha=existing_sha,
+        client=client,
+    )
+
+
+async def put_binary_file(
+    *,
+    settings: Settings,
+    path: str,
+    content: bytes,
+    message: str,
+    existing_sha: str | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> str:
+    """PUT a binary file (image, etc.). Bytes go straight to base64 — no
+    UTF-8 encoding step that would corrupt non-text payloads."""
+    return await _put_raw(
+        settings=settings,
+        path=path,
+        content_b64=base64.b64encode(content).decode("ascii"),
+        message=message,
+        existing_sha=existing_sha,
+        client=client,
+    )
 
 
 async def _fetch_rows(conn: aiosqlite.Connection, query: str, args: tuple) -> list[aiosqlite.Row]:
@@ -234,6 +272,19 @@ async def push_capture(
         row, why_children=whys, highlight_children=highlights,
     )
     path = file_path_for(row)
+
+    # Push the photo asset (if any) BEFORE the .md, so a viewer following
+    # the .md's `asset = "..."` reference never lands on a missing file.
+    asset_path = asset_path_for(row)
+    if asset_path and row["asset_bytes"]:
+        await put_binary_file(
+            settings=settings,
+            path=asset_path,
+            content=bytes(row["asset_bytes"]),
+            message=f"asset {row['local_date']} (capture {row['id']})",
+            client=client,
+        )
+
     sha = await put_file(
         settings=settings,
         path=path,

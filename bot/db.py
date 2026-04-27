@@ -118,10 +118,17 @@ CREATE TABLE IF NOT EXISTS llm_usage (
 CREATE INDEX IF NOT EXISTS idx_usage_month ON llm_usage(substr(at,1,7));
 """
 
+_MIGRATION_V2 = """
+ALTER TABLE captures ADD COLUMN asset_bytes BLOB;
+ALTER TABLE captures ADD COLUMN asset_mime TEXT;
+"""
+
+
 # Ordered list of migrations. MIGRATIONS[i] upgrades schema from v(i) to v(i+1).
 # v0 = empty DB. Never modify a migration once shipped; append new ones.
 MIGRATIONS: list[str] = [
     _MIGRATION_V1,
+    _MIGRATION_V2,
 ]
 
 
@@ -159,6 +166,8 @@ async def insert_capture(
     processed: dict[str, Any] | None = None,
     parent_id: int | None = None,
     telegram_msg_id: int | None = None,
+    asset_bytes: bytes | None = None,
+    asset_mime: str | None = None,
     dob: date,
     tz_name: str,
     created_at: datetime | None = None,
@@ -172,9 +181,9 @@ async def insert_capture(
         """
         INSERT INTO captures (
             kind, source, url, raw, payload, processed,
-            parent_id, telegram_msg_id,
+            parent_id, telegram_msg_id, asset_bytes, asset_mime,
             created_at, local_date, iso_week_key, fz_week_idx, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (source, telegram_msg_id) DO NOTHING
         RETURNING id
         """,
@@ -182,7 +191,7 @@ async def insert_capture(
             kind, source, url, raw,
             json.dumps(payload) if payload is not None else None,
             json.dumps(processed) if processed is not None else None,
-            parent_id, telegram_msg_id,
+            parent_id, telegram_msg_id, asset_bytes, asset_mime,
             created_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
             local_d.isoformat(),
             iso_week_key(local_d),
