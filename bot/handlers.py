@@ -1017,6 +1017,12 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 settings=settings, providers=providers, db_conn=conn,
             )
         )
+    else:
+        asyncio.create_task(
+            _push_in_background(
+                capture_id=capture_id, settings=settings, db_conn=conn,
+            )
+        )
 
 
 _PDF_MIME = "application/pdf"

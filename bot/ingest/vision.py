@@ -63,7 +63,7 @@ async def ocr_and_describe(
     settings: Settings,
     providers: Providers,
     conn: aiosqlite.Connection,
-    max_tokens: int = 1024,
+    max_tokens: int = 4096,
 ) -> dict:
     """Run vision on the image; returns {"ocr": str, "description": str}."""
     from bot.llm.router import model_for_purpose
@@ -80,4 +80,11 @@ async def ocr_and_describe(
     )
     await budget.record_usage(conn, purpose="vision", response=response)
     parsed = _coerce_json(response.text) or {}
-    return _normalize(parsed)
+    result = _normalize(parsed)
+    if not result["ocr"] and not result["description"]:
+        log.warning(
+            "vision normalized to empty (model=%s, output_tokens=%d, stop=%s); raw preview: %r",
+            response.model, response.output_tokens, response.stop_reason,
+            (response.text or "")[:300],
+        )
+    return result
