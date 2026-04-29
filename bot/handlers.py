@@ -46,17 +46,23 @@ async def _ensure_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _ensure_owner(update, context):
         return
+    if update.message is None:
+        return
     await update.message.reply_text(GREETING)
 
 
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _ensure_owner(update, context):
         return
+    if update.message is None:
+        return
     await update.message.reply_text(HELP_TEXT)
 
 
 async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _ensure_owner(update, context):
+        return
+    if update.message is None:
         return
     settings: Settings = context.bot_data["settings"]
     conn = context.bot_data["db"]
@@ -414,6 +420,8 @@ async def skip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancel any pending 'why?' or daily reflection without storing."""
     if not await _ensure_owner(update, context):
         return
+    if update.message is None:
+        return
     conn = context.bot_data["db"]
     await why.clear_pending(conn)
     await reflection.clear_pending(conn)
@@ -423,6 +431,8 @@ async def skip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def setvow_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/setvow <text> — store the user's vow for fz.ax's dashboard."""
     if not await _ensure_owner(update, context):
+        return
+    if update.message is None:
         return
     conn = context.bot_data["db"]
     text = " ".join(context.args) if context.args else ""
@@ -443,6 +453,8 @@ async def setmark_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     scheduler doesn't skip the week on idempotency.
     """
     if not await _ensure_owner(update, context):
+        return
+    if update.message is None:
         return
     settings: Settings = context.bot_data["settings"]
     conn = context.bot_data["db"]
@@ -504,6 +516,8 @@ async def export_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     if not await _ensure_owner(update, context):
         return
+    if update.message is None:
+        return
     settings: Settings = context.bot_data["settings"]
     conn = context.bot_data["db"]
     providers: Providers | None = context.bot_data.get("providers")
@@ -529,6 +543,8 @@ async def forget_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file without that child.
     """
     if not await _ensure_owner(update, context):
+        return
+    if update.message is None:
         return
     settings: Settings = context.bot_data["settings"]
     conn = context.bot_data["db"]
@@ -672,6 +688,8 @@ async def tweetweekly_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     """
     if not await _ensure_owner(update, context):
         return
+    if update.message is None:
+        return
     settings: Settings = context.bot_data["settings"]
     conn = context.bot_data["db"]
     providers: Providers | None = context.bot_data.get("providers")
@@ -793,6 +811,8 @@ async def ask_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     if not await _ensure_owner(update, context):
         return
+    if update.message is None:
+        return
     settings: Settings = context.bot_data["settings"]
     conn = context.bot_data["db"]
     providers: Providers | None = context.bot_data.get("providers")
@@ -818,6 +838,8 @@ async def reflect_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Force today's daily prompt to fire now. Useful when the owner wants to
     reflect outside the scheduled window."""
     if not await _ensure_owner(update, context):
+        return
+    if update.message is None:
         return
     settings: Settings = context.bot_data["settings"]
     conn = context.bot_data["db"]
