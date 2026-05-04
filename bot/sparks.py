@@ -21,6 +21,11 @@ import aiosqlite
 
 from bot.config import Settings
 from bot.digest.validate import normalize_for_quote_check
+from bot.github_sync import (
+    fetch_file,
+    is_configured as github_configured,
+    put_file,
+)
 from bot.llm.base import Message
 from bot.llm.router import Providers, call_llm
 from bot.persona import VOICE_ORCHURATOR
@@ -55,15 +60,22 @@ async def _load_candidates(
         if r["payload"]:
             try:
                 p = json.loads(r["payload"])
-                scrape = (p.get("scrape") or {})
-                txt = scrape.get("text") if isinstance(scrape, dict) else None
+            except json.JSONDecodeError:
+                continue
+            scrape = p.get("scrape") or {}
+            if isinstance(scrape, dict):
+                txt = scrape.get("text")
                 if isinstance(txt, str) and txt.strip():
                     bodies.append(txt.strip())
-                tx = p.get("transcript")
-                if isinstance(tx, str) and tx.strip():
-                    bodies.append(tx.strip())
-            except (json.JSONDecodeError, KeyError):
-                pass
+            vision = p.get("vision") or {}
+            if isinstance(vision, dict):
+                for key in ("ocr", "description"):
+                    v = vision.get(key)
+                    if isinstance(v, str) and v.strip():
+                        bodies.append(v.strip())
+            tx = p.get("transcript")
+            if isinstance(tx, str) and tx.strip():
+                bodies.append(tx.strip())
     return bodies
 
 
@@ -141,41 +153,13 @@ async def select_spark(
     return None
 
 
-def append_spark(path: Path, *, date: str, line: str) -> None:
-    """Append `<date> — <line>` to sparks.md preserving blank-line spacing.
-
-    Idempotent: re-appending the same `date — line` as the current last
-    entry is a no-op.
-    """
-    new_entry = f"{date} — {line.strip()}"
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
-
-    if existing:
-        # Idempotent check: if the last non-blank line is exactly the new
-        # entry, do nothing.
-        for prev in reversed(existing.splitlines()):
-            if prev.strip():
-                if prev == new_entry:
-                    return
-                break
-
-    if not existing:
-        body = _HEADER + "\n" + new_entry + "\n"
-    else:
-        # Strip trailing newlines, ensure blank-line spacing.
-        normalized = existing.rstrip("\n")
-        body = normalized + "\n\n" + new_entry + "\n"
-
-    path.write_text(body, encoding="utf-8")
-
-
 _SPARKS_FILENAME = "sparks.md"
 
 
-def _normalize_in_memory(existing: str, *, date: str, line: str) -> str:
-    """In-memory equivalent of `append_spark` for cloud-driven write
-    via the GitHub contents API. Returns the existing string unchanged
-    when the entry would be a duplicate of the last line."""
+def _appended_text(existing: str, *, date: str, line: str) -> str:
+    """Return `existing` with `<date> — <line>` appended, preserving
+    blank-line spacing between entries. Idempotent: returns `existing`
+    unchanged when the entry duplicates the current last line."""
     new_entry = f"{date} — {line.strip()}"
     if existing:
         for prev in reversed(existing.splitlines()):
@@ -185,8 +169,19 @@ def _normalize_in_memory(existing: str, *, date: str, line: str) -> str:
                 break
     if not existing:
         return _HEADER + "\n" + new_entry + "\n"
-    normalized = existing.rstrip("\n")
-    return normalized + "\n\n" + new_entry + "\n"
+    return existing.rstrip("\n") + "\n\n" + new_entry + "\n"
+
+
+def append_spark(path: Path, *, date: str, line: str) -> None:
+    """Append `<date> — <line>` to sparks.md preserving blank-line spacing.
+
+    Idempotent: re-appending the same `date — line` as the current last
+    entry is a no-op.
+    """
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    new_text = _appended_text(existing, date=date, line=line)
+    if new_text != existing:
+        path.write_text(new_text, encoding="utf-8")
 
 
 async def daily_sparks_job(
@@ -198,12 +193,6 @@ async def daily_sparks_job(
 ) -> bool:
     """Run once per day at SPARKS_LOCAL_TIME. Returns True iff a spark
     was selected and pushed. Silent on no-spark days."""
-    from bot.github_sync import (
-        fetch_file,
-        is_configured as github_configured,
-        put_file,
-    )
-
     if not settings.SPARKS_ENABLED:
         return False
     if not github_configured(settings):
@@ -220,7 +209,7 @@ async def daily_sparks_job(
 
     fetched = await fetch_file(settings=settings, path=_SPARKS_FILENAME)
     existing, sha = ("", None) if fetched is None else fetched
-    new_content = _normalize_in_memory(existing, date=yesterday, line=line)
+    new_content = _appended_text(existing, date=yesterday, line=line)
     if new_content == existing:
         log.info("daily_sparks_job: idempotent no-op for %s", yesterday)
         return False

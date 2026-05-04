@@ -40,7 +40,10 @@ def main(argv: list[str]) -> int:
         print("usage: normalize_sparks.py <sparks.md>", file=sys.stderr)
         return 2
     path = Path(argv[1])
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    if not path.exists():
+        print(f"{path}: file not found", file=sys.stderr)
+        return 1
+    text = path.read_text(encoding="utf-8")
     out = normalize_sparks_text(text)
     if out == text:
         print(f"{path}: already normalized")

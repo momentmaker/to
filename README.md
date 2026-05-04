@@ -383,6 +383,8 @@ LLM_PROVIDER_VISION=openai
 | `WEEKLY_DIGEST_DOW` | `sat` | `mon` `tue` `wed` `thu` `fri` `sat` `sun` |
 | `WEEKLY_DIGEST_LOCAL_TIME` | `22:00` | Local time for the digest or reminder |
 | `WHY_WINDOW_MINUTES` | `10` | After a URL save, how long to treat the next reply as the "why" |
+| `SPARKS_ENABLED` | `true` | Daily server-side spark selection. `false` disables the cron entirely. |
+| `SPARKS_LOCAL_TIME` | `06:00` | When the daily spark job runs. Picks yesterday's sharpest verbatim line and appends to `sparks.md` in the captures repo. |
 
 ### Optional
 
