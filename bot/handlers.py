@@ -1278,3 +1278,68 @@ async def next_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "couldn't generate a draft — try /next again or /skip."
     )
+
+
+async def edit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _ensure_owner(update, context):
+        return
+    if update.message is None:
+        return
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+
+    raw = (update.message.text or "").strip()
+    parts = raw.split(maxsplit=1)
+    user_text = parts[1].strip() if len(parts) == 2 else ""
+    if not user_text:
+        await update.message.reply_text("usage: /edit <your tweet text>")
+        return
+
+    pending = await tweet_daily.get_pending(conn)
+    if pending is None:
+        await update.message.reply_text("no draft pending.")
+        return
+
+    from bot.tweet_validate import validate_tweet_total_length
+    ok, reason = validate_tweet_total_length(user_text)
+    if not ok:
+        # Preserve pending so the user can re-edit.
+        await update.message.reply_text(reason or "too long")
+        return
+
+    consumed = await tweet_daily.consume_for_post(conn)
+    if consumed is None:
+        await update.message.reply_text("no draft pending.")
+        return
+
+    result = await tweet_mod.post_tweet(user_text, settings=settings)
+    if result is None:
+        await update.message.reply_text("post failed.")
+        return
+
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    await tweet_daily.record_tweet(
+        conn,
+        tweet_id=result.id, tweeted_at=now,
+        local_date=consumed.local_date,
+        capture_ids=consumed.capture_ids,
+        theme=consumed.theme or None,
+        stitch=consumed.stitch or None,
+        text=user_text,
+        draft_count=consumed.draft_count,
+        edited=True,
+    )
+    try:
+        await tweet_daily.push_ledger_to_repo(
+            settings=settings,
+            record={
+                "tweet_id": result.id, "url": result.url,
+                "tweeted_at": now, "local_date": consumed.local_date,
+                "capture_ids": consumed.capture_ids,
+                "theme": consumed.theme, "stitch": consumed.stitch,
+                "text": user_text, "edited": True,
+            },
+        )
+    except Exception:
+        log.exception("ledger push failed")
+    await update.message.reply_text(f"posted: {result.url}")

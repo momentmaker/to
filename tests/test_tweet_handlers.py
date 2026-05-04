@@ -209,3 +209,86 @@ async def test_next_handler_no_pending_replies_idle():
         await handlers.next_handler(update, ctx)
         update.message.reply_text.assert_awaited()
         assert "no draft" in update.message.reply_text.call_args.args[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_edit_handler_posts_user_text_and_marks_edited(monkeypatch):
+    settings = fake_settings(TELEGRAM_OWNER_ID=1)
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        await tweet_daily.set_pending(
+            conn, draft_text="orig", capture_ids=[1, 2],
+            theme="t", stitch="s", char_count=10,
+            local_date="2026-05-03",
+        )
+
+        async def fake_post_tweet(text, *, settings):
+            from bot.tweet import TweetResult
+            return TweetResult(id="2", url="https://x.com/i/web/status/2")
+
+        monkeypatch.setattr(
+            "bot.handlers.tweet_mod.post_tweet", fake_post_tweet,
+        )
+
+        async def no_push(**_):
+            pass
+        monkeypatch.setattr(
+            "bot.handlers.tweet_daily.push_ledger_to_repo", no_push,
+        )
+
+        update = _update("/edit my own version")
+        ctx = _ctx(conn=conn, settings=settings)
+        await handlers.edit_handler(update, ctx)
+
+        async with conn.execute("SELECT text, edited FROM tweets") as cur:
+            row = await cur.fetchone()
+        assert row["text"] == "my own version"
+        assert row["edited"] == 1
+
+
+@pytest.mark.asyncio
+async def test_edit_handler_rejects_over_280():
+    settings = fake_settings(TELEGRAM_OWNER_ID=1)
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        await tweet_daily.set_pending(
+            conn, draft_text="orig", capture_ids=[1, 2],
+            theme="t", stitch="s", char_count=10,
+            local_date="2026-05-03",
+        )
+        long_text = "/edit " + "x" * 281
+        update = _update(long_text)
+        ctx = _ctx(conn=conn, settings=settings)
+        await handlers.edit_handler(update, ctx)
+        # Pending preserved, no tweet row.
+        assert await tweet_daily.get_pending(conn) is not None
+        async with conn.execute("SELECT COUNT(*) FROM tweets") as cur:
+            assert (await cur.fetchone())[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_edit_handler_no_pending_replies_idle():
+    settings = fake_settings(TELEGRAM_OWNER_ID=1)
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        update = _update("/edit hello world")
+        ctx = _ctx(conn=conn, settings=settings)
+        await handlers.edit_handler(update, ctx)
+        update.message.reply_text.assert_awaited()
+        assert "no draft" in update.message.reply_text.call_args.args[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_edit_handler_no_text_replies_usage():
+    settings = fake_settings(TELEGRAM_OWNER_ID=1)
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        update = _update("/edit")
+        ctx = _ctx(conn=conn, settings=settings)
+        await handlers.edit_handler(update, ctx)
+        update.message.reply_text.assert_awaited()
+        assert "usage" in update.message.reply_text.call_args.args[0].lower()
