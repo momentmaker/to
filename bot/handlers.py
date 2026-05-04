@@ -102,10 +102,37 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     config_line = f"dob: {settings.DOB}  |  tz: {settings.TIMEZONE}"
 
+    # Capture status breakdown (helps diagnose pool=0 in the tweet
+    # pipeline: a flagged capture only counts when status='done').
+    async with conn.execute(
+        "SELECT status, COUNT(*) FROM captures "
+        "WHERE kind NOT IN ('why','highlight') "
+        "GROUP BY status"
+    ) as cur:
+        status_counts = {str(r[0]): int(r[1]) for r in await cur.fetchall()}
+    captures_line = (
+        f"captures: {sum(status_counts.values())} total · "
+        + " · ".join(
+            f"{n} {s}" for s, n in sorted(status_counts.items())
+        )
+    )
+
     pending_tweet = await tweet_daily.get_pending(conn)
     async with conn.execute("SELECT COUNT(*) FROM tweets") as cur:
         ledger_row = await cur.fetchone()
     ledger_count = int(ledger_row[0]) if ledger_row else 0
+    async with conn.execute(
+        "SELECT COUNT(*) FROM captures "
+        "WHERE JSON_EXTRACT(payload, '$.tweetable') = 1"
+    ) as cur:
+        flagged_total = int((await cur.fetchone())[0])
+    async with conn.execute(
+        "SELECT COUNT(*) FROM captures "
+        "WHERE JSON_EXTRACT(payload, '$.tweetable') = 1 "
+        "  AND status = 'done' "
+        "  AND kind NOT IN ('why','highlight')"
+    ) as cur:
+        flagged_eligible = int((await cur.fetchone())[0])
 
     pipeline_lines = ["", "tweet pipeline:"]
     pipeline_lines.append(
@@ -118,11 +145,15 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"  pending: draft {pending_tweet.draft_count}/"
             f"{settings.TWEET_NEXT_CAP} · theme={pending_tweet.theme}"
         )
+    pipeline_lines.append(
+        f"  flagged tweetable: {flagged_total} · pool eligible: {flagged_eligible}"
+    )
     pipeline_lines.append(f"  ledger: {ledger_count}")
 
     lines = [
         f"corpus: {total}",
         f"this week ({w_key}, fz-week {w_idx}): {this_week}",
+        captures_line,
         "",
         *cost_lines,
         cache_line,
