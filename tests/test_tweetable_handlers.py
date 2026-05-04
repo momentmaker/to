@@ -181,3 +181,92 @@ async def test_tweetable_preserves_github_sha(monkeypatch):
         )
         # The sha row must still hold its prior value when push_capture runs.
         assert captured["sha_at_push"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_tweetable_last_advances_on_subsequent_calls(monkeypatch):
+    """`/tweetable last` should pick the most-recent UN-flagged capture.
+    Calling it twice in a row must flag two different captures, not the
+    same one twice. Regression: original implementation always picked the
+    most recent capture regardless of tweetable state.
+    """
+    settings = fake_settings(
+        TELEGRAM_OWNER_ID=1, GITHUB_TOKEN="t", GITHUB_REPO="x/y",
+    )
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        # Three un-flagged captures, ascending id (3 is most recent).
+        for _ in range(3):
+            await _add_capture(conn)
+
+        async def fake_push(*args, **kwargs):
+            return True
+
+        monkeypatch.setattr(
+            "bot.handlers.github_sync.push_capture", fake_push,
+        )
+
+        ctx = _ctx(conn=conn, settings=settings)
+        await handlers.tweetable_handler(_update("/tweetable last"), ctx)
+        await handlers.tweetable_handler(_update("/tweetable last"), ctx)
+
+        async with conn.execute(
+            "SELECT id, payload FROM captures ORDER BY id"
+        ) as cur:
+            rows = list(await cur.fetchall())
+        flags = [json.loads(r["payload"]).get("tweetable") for r in rows]
+        # Captures 2 and 3 (the most recent two) flagged; capture 1 not.
+        assert flags == [None, True, True]
+
+
+@pytest.mark.asyncio
+async def test_tweetable_last_replies_when_all_flagged(monkeypatch):
+    """When every recent capture is already flagged, /tweetable last
+    should give a clear message instead of pretending to flag again."""
+    settings = fake_settings(TELEGRAM_OWNER_ID=1)
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        await _add_capture(conn, payload={"tweetable": True})
+
+        update = _update("/tweetable last")
+        ctx = _ctx(conn=conn, settings=settings)
+        await handlers.tweetable_handler(update, ctx)
+        update.message.reply_text.assert_awaited()
+        msg = update.message.reply_text.call_args.args[0].lower()
+        assert "already flagged" in msg
+
+
+@pytest.mark.asyncio
+async def test_untweetable_last_picks_most_recent_flagged(monkeypatch):
+    """`/untweetable last` should target the most-recent FLAGGED capture,
+    not just the most recent capture (which might already be un-flagged)."""
+    settings = fake_settings(
+        TELEGRAM_OWNER_ID=1, GITHUB_TOKEN="t", GITHUB_REPO="x/y",
+    )
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        # id=1 flagged, id=2 unflagged. /untweetable last should hit 1.
+        await _add_capture(conn, payload={"tweetable": True})
+        await _add_capture(conn, payload={})
+
+        async def fake_push(*args, **kwargs):
+            return True
+
+        monkeypatch.setattr(
+            "bot.handlers.github_sync.push_capture", fake_push,
+        )
+
+        await handlers.untweetable_handler(
+            _update("/untweetable last"),
+            _ctx(conn=conn, settings=settings),
+        )
+        async with conn.execute(
+            "SELECT id, payload FROM captures ORDER BY id"
+        ) as cur:
+            rows = list(await cur.fetchall())
+        # id=1 was flagged → now cleared; id=2 still untouched.
+        assert json.loads(rows[0]["payload"]).get("tweetable") is False
+        assert json.loads(rows[1]["payload"]).get("tweetable") is None

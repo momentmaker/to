@@ -1396,13 +1396,41 @@ async def _set_tweetable(
     return True
 
 
-async def _resolve_capture_id(conn, arg: str) -> int | None:
+async def _resolve_capture_id(
+    conn, arg: str, *, target_value: bool | None = None,
+) -> int | None:
+    """Resolve a capture id from the user's argument.
+
+    For arg='last', the meaning of "last" depends on what the caller is
+    about to do:
+    - target_value=True (about to FLAG tweetable): the most recent capture
+      that is NOT already flagged. Each `/tweetable last` advances.
+    - target_value=False (about to UN-flag): the most recent capture that
+      IS currently flagged. Each `/untweetable last` retreats.
+    - target_value=None: the most recent capture, ignoring tweetable state.
+    """
     if arg == "last":
-        async with conn.execute(
-            "SELECT id FROM captures "
-            "WHERE kind NOT IN ('why','highlight') "
-            "ORDER BY id DESC LIMIT 1"
-        ) as cur:
+        if target_value is True:
+            sql = (
+                "SELECT id FROM captures "
+                "WHERE kind NOT IN ('why','highlight') "
+                "  AND COALESCE(JSON_EXTRACT(payload, '$.tweetable'), 0) != 1 "
+                "ORDER BY id DESC LIMIT 1"
+            )
+        elif target_value is False:
+            sql = (
+                "SELECT id FROM captures "
+                "WHERE kind NOT IN ('why','highlight') "
+                "  AND COALESCE(JSON_EXTRACT(payload, '$.tweetable'), 0) = 1 "
+                "ORDER BY id DESC LIMIT 1"
+            )
+        else:
+            sql = (
+                "SELECT id FROM captures "
+                "WHERE kind NOT IN ('why','highlight') "
+                "ORDER BY id DESC LIMIT 1"
+            )
+        async with conn.execute(sql) as cur:
             row = await cur.fetchone()
         return int(row[0]) if row else None
     try:
@@ -1433,9 +1461,14 @@ async def _do_tweetable_command(
         await update.message.reply_text(usage)
         return
 
-    capture_id = await _resolve_capture_id(conn, arg)
+    capture_id = await _resolve_capture_id(conn, arg, target_value=value)
     if capture_id is None:
-        await update.message.reply_text(f"no such capture: {arg}")
+        if arg == "last":
+            already = "all recent captures already flagged" if value \
+                else "no flagged captures to clear"
+            await update.message.reply_text(already + ".")
+        else:
+            await update.message.reply_text(f"no such capture: {arg}")
         return
     ok = await _set_tweetable(conn, capture_id=capture_id, value=value)
     if not ok:
