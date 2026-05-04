@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     LLM_PROVIDER_VISION: str = "anthropic"
 
     CLAUDE_MODEL_INGEST: str = "claude-sonnet-4-6"
-    CLAUDE_MODEL_DIGEST: str = "claude-opus-4-7"
+    CLAUDE_MODEL_DIGEST: str = "claude-sonnet-4-6"
     CLAUDE_MODEL_CHEAP: str = "claude-haiku-4-5-20251001"
     OPENAI_MODEL_INGEST: str = "gpt-4.1-mini"
     OPENAI_MODEL_DIGEST: str = "gpt-4.1"

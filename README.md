@@ -352,7 +352,7 @@ Without these, captures stay in the SQLite file only (not pushed anywhere).
 | `LLM_PROVIDER_TWEET`  | `openai`    | Tweet drafting |
 | `LLM_PROVIDER_VISION` | `anthropic` | Image OCR + description |
 | `CLAUDE_MODEL_INGEST` | `claude-sonnet-4-6` | |
-| `CLAUDE_MODEL_DIGEST` | `claude-opus-4-7` | Headline-feature model |
+| `CLAUDE_MODEL_DIGEST` | `claude-sonnet-4-6` | Quote-only validator catches hallucinations, so sonnet is plenty. Set to `claude-opus-4-7` for richer voice (~5x the cost). |
 | `CLAUDE_MODEL_CHEAP`  | `claude-haiku-4-5-20251001` | Used above budget cap |
 | `OPENAI_MODEL_INGEST` | `gpt-4.1-mini` | |
 | `OPENAI_MODEL_DIGEST` | `gpt-4.1` | |
