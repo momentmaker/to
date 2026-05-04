@@ -19,6 +19,8 @@ import aiosqlite
 from bot.config import Settings
 from bot.llm.base import Message
 from bot.llm.router import Providers, call_llm
+from bot.persona import VOICE_ORCHURATOR
+from bot.prompts import SYSTEM_TWEET_STITCH
 
 log = logging.getLogger(__name__)
 
@@ -173,3 +175,36 @@ async def pick_theme(
         return histogram.get(p.theme, 0), proposals.index(p)
 
     return sorted(proposals, key=usage)[0]
+
+
+async def generate_stitch(
+    *,
+    theme: str,
+    capture_summaries: list[tuple[str, str]],
+    settings: Settings,
+    providers: Providers,
+    conn: aiosqlite.Connection,
+) -> str:
+    """Call the tweet-purpose LLM to produce one stitch sentence.
+    `capture_summaries` is a list of (date, body) tuples.
+    Returns "" on any failure (caller should retry or abandon)."""
+    body_lines = "\n".join(
+        f'  ({date}) "{body}"' for date, body in capture_summaries
+    )
+    user_content = f"Theme: {theme}\n\nCaptures:\n{body_lines}"
+    try:
+        response = await call_llm(
+            purpose="tweet",
+            system_blocks=[VOICE_ORCHURATOR, SYSTEM_TWEET_STITCH],
+            messages=[Message(role="user", content=user_content)],
+            max_tokens=200,
+            settings=settings, providers=providers, conn=conn,
+        )
+    except Exception:
+        log.exception("generate_stitch: LLM call failed")
+        return ""
+    obj = _coerce_json(response.text)
+    if not isinstance(obj, dict):
+        return ""
+    s = obj.get("stitch")
+    return s.strip() if isinstance(s, str) else ""

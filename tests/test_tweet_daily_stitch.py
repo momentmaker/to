@@ -121,3 +121,70 @@ async def test_pick_theme_returns_none_for_empty():
         await init_schema(conn)
         chosen = await tweet_daily.pick_theme([], conn=conn)
         assert chosen is None
+
+
+@pytest.mark.asyncio
+async def test_generate_stitch_returns_string(monkeypatch):
+    settings = fake_settings()
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+
+        async def fake_call(**kwargs):
+            class R:
+                text = json.dumps({"stitch": "you caught the asymmetry."})
+            return R()
+
+        monkeypatch.setattr("bot.tweet_daily.call_llm", fake_call)
+
+        s = await tweet_daily.generate_stitch(
+            theme="privacy",
+            capture_summaries=[
+                ("2026-04-22", "crazy last of privacy for employees"),
+                ("2026-04-21", "didn't even know someone kept this data"),
+            ],
+            settings=settings, providers=FakeProviders(), conn=conn,
+        )
+        assert s == "you caught the asymmetry."
+
+
+@pytest.mark.asyncio
+async def test_generate_stitch_returns_empty_on_llm_failure(monkeypatch):
+    settings = fake_settings()
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+
+        async def fake_call(**kwargs):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("bot.tweet_daily.call_llm", fake_call)
+
+        s = await tweet_daily.generate_stitch(
+            theme="x",
+            capture_summaries=[("2026-01-01", "a")],
+            settings=settings, providers=FakeProviders(), conn=conn,
+        )
+        assert s == ""
+
+
+@pytest.mark.asyncio
+async def test_generate_stitch_returns_empty_on_malformed_json(monkeypatch):
+    settings = fake_settings()
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+
+        async def fake_call(**kwargs):
+            class R:
+                text = "not even close to json"
+            return R()
+
+        monkeypatch.setattr("bot.tweet_daily.call_llm", fake_call)
+
+        s = await tweet_daily.generate_stitch(
+            theme="x",
+            capture_summaries=[("2026-01-01", "a")],
+            settings=settings, providers=FakeProviders(), conn=conn,
+        )
+        assert s == ""
