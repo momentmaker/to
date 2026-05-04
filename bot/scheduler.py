@@ -20,7 +20,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from bot import github_sync, process, reflection, sparks
+from bot import github_sync, process, reflection, sparks, tweet_daily
 from bot.config import Settings
 from bot.digest import weekly as digest_weekly
 from bot.llm.base import Message
@@ -410,6 +410,57 @@ def build_scheduler(
                 kwargs={"conn": conn, "settings": settings, "bot": bot},
                 trigger=weekly_trigger,
                 id="weekly_reminder",
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True,
+            )
+
+        # Tweet draft expiry: cheap kv check every 60s. Drops a pending
+        # draft from a prior local day so a fresh 09:00 fire isn't
+        # blocked by stale state.
+        async def _tweet_expire_wrapper():
+            today_local = local_date_for(
+                datetime.now(timezone.utc), settings.TIMEZONE,
+            ).isoformat()
+            try:
+                await tweet_daily.expire_if_stale(
+                    conn, today_local=today_local,
+                )
+            except Exception:
+                log.exception("tweet_draft_expiry failed")
+
+        scheduler.add_job(
+            _tweet_expire_wrapper,
+            trigger=IntervalTrigger(seconds=60),
+            id="tweet_draft_expiry",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
+
+        # Daily tweet draft: cron-driven at TWEET_DRAFT_LOCAL_TIME.
+        if settings.TWEET_DAILY_V2_ENABLED:
+            th, tm = _parse_hhmm(settings.TWEET_DRAFT_LOCAL_TIME)
+
+            async def _tweet_draft_wrapper():
+                today_iso = local_date_for(
+                    datetime.now(timezone.utc), settings.TIMEZONE,
+                ).isoformat()
+                try:
+                    await tweet_daily.daily_tweet_draft_job(
+                        conn=conn, settings=settings,
+                        providers=providers, bot=bot,
+                        today_iso=today_iso,
+                    )
+                except Exception:
+                    log.exception("daily_tweet_draft_job failed")
+
+            scheduler.add_job(
+                _tweet_draft_wrapper,
+                trigger=CronTrigger(
+                    hour=th, minute=tm, timezone=settings.TIMEZONE,
+                ),
+                id="daily_tweet_draft",
                 max_instances=1,
                 coalesce=True,
                 replace_existing=True,
