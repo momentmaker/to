@@ -208,3 +208,103 @@ async def generate_stitch(
         return ""
     s = obj.get("stitch")
     return s.strip() if isinstance(s, str) else ""
+
+
+import grapheme
+
+_TCO_LEN = 23
+_TWEET_MAX = 280
+_MIN_QUOTE_LEN = 30
+
+
+def _word_truncate(text: str, max_len: int) -> str:
+    """Truncate `text` to ≤ max_len graphemes at a word boundary.
+    Returns empty string when max_len < 1."""
+    if max_len < 1:
+        return ""
+    if grapheme.length(text) <= max_len:
+        return text
+    chars = list(grapheme.graphemes(text))
+    cut = "".join(chars[:max_len])
+    space = cut.rfind(" ")
+    if space > 0:
+        cut = cut[:space]
+    return cut.rstrip()
+
+
+def assemble_tweet(
+    *,
+    stitch: str,
+    captures: list[dict],
+) -> str | None:
+    """Compose the final tweet text. Returns None if the captures cannot
+    be made to fit (any required quote would shrink below 30 chars).
+
+    Format:
+        <stitch>
+
+        — "<quote 1>" (YYYY-MM-DD)
+        — "<quote 2>" (YYYY-MM-DD)
+        [<url>]
+    """
+    if not stitch or not captures or len(captures) < 2:
+        return None
+    cap_pair = captures[:2]
+
+    url_caps = [c for c in cap_pair if c.get("kind") == "url" and c.get("url")]
+    url = None
+    if url_caps:
+        url_caps.sort(key=lambda c: c.get("local_date") or "")
+        url = url_caps[0]["url"]
+
+    overhead_per_line = 18
+    overhead_total = grapheme.length(stitch) + 2 + (overhead_per_line * 2)
+    if url:
+        overhead_total += 1 + _TCO_LEN
+
+    available = _TWEET_MAX - overhead_total
+    if available < _MIN_QUOTE_LEN * 2:
+        return None
+
+    bodies = [(c.get("raw") or "").strip() for c in cap_pair]
+    if not all(bodies):
+        return None
+    body_lens = [grapheme.length(b) for b in bodies]
+    if sum(body_lens) == 0:
+        return None
+
+    # Iterative shortest-first allocation:
+    # - Process bodies in length-ascending order so short bodies can stay
+    #   verbatim and yield their unused budget to longer ones.
+    # - For each body, reserve MIN_QUOTE_LEN per remaining body so the
+    #   final quota is never forced below the floor on a long body.
+    indexed = sorted(range(len(bodies)), key=lambda i: body_lens[i])
+    remaining_budget = available
+    truncated_by_idx: dict[int, str] = {}
+    for n, idx in enumerate(indexed):
+        bodies_left_after = len(indexed) - n - 1
+        fair_max = remaining_budget - bodies_left_after * _MIN_QUOTE_LEN
+        if fair_max < _MIN_QUOTE_LEN and body_lens[idx] > fair_max:
+            return None  # would force a long body below the floor
+        quota = min(body_lens[idx], fair_max)
+        if quota >= body_lens[idx]:
+            t = bodies[idx]
+        else:
+            t = _word_truncate(bodies[idx], quota)
+            if grapheme.length(t) < _MIN_QUOTE_LEN:
+                return None
+        truncated_by_idx[idx] = t
+        remaining_budget -= grapheme.length(t)
+    truncated = [truncated_by_idx[i] for i in range(len(bodies))]
+
+    lines = [stitch.strip(), ""]
+    for body, cap in zip(truncated, cap_pair):
+        lines.append(f'— "{body}" ({cap["local_date"]})')
+    if url:
+        lines.append(url)
+    out = "\n".join(lines)
+
+    measured = re.sub(r"https?://\S+", "x" * _TCO_LEN, out)
+    if grapheme.length(measured) > _TWEET_MAX:
+        return None
+    return out
