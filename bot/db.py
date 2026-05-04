@@ -124,11 +124,29 @@ ALTER TABLE captures ADD COLUMN asset_mime TEXT;
 """
 
 
+_MIGRATION_V3 = """
+CREATE TABLE IF NOT EXISTS tweets (
+  tweet_id     TEXT PRIMARY KEY,
+  tweeted_at   TEXT NOT NULL,
+  local_date   TEXT NOT NULL,
+  capture_ids  TEXT NOT NULL,
+  theme        TEXT,
+  stitch       TEXT,
+  text         TEXT NOT NULL,
+  draft_count  INTEGER NOT NULL,
+  edited       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS tweets_theme_idx ON tweets(theme);
+CREATE INDEX IF NOT EXISTS tweets_local_date_idx ON tweets(local_date);
+"""
+
+
 # Ordered list of migrations. MIGRATIONS[i] upgrades schema from v(i) to v(i+1).
 # v0 = empty DB. Never modify a migration once shipped; append new ones.
 MIGRATIONS: list[str] = [
     _MIGRATION_V1,
     _MIGRATION_V2,
+    _MIGRATION_V3,
 ]
 
 
