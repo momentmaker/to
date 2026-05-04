@@ -19,3 +19,9 @@ data/
 *.db-wal
 *.db-shm
 .DS_Store
+
+# Local dev artifacts not meant for the repo
+.agents/
+.claude/skills/
+kaijutsu.json
+kaijutsu.lock.json
