@@ -24,6 +24,7 @@ from bot.ingest.router import classify_text, scrape_url
 from bot.llm import budget as llm_budget
 from bot.llm.router import Providers
 from bot.persona import ACK_TEXT, GREETING, HELP_TEXT
+from bot.tweet_validate import validate_tweet_total_length
 from bot.week import fz_week_idx, iso_week_key, local_date_for
 
 log = logging.getLogger(__name__)
@@ -1249,7 +1250,7 @@ async def next_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     proposals = await tweet_daily.detect_themes(
-        pool_summary=tweet_daily._format_pool_for_themes(pool),
+        pool_summary=tweet_daily.format_pool_for_themes(pool),
         settings=settings, providers=providers, conn=conn,
     )
     if not proposals:
@@ -1272,7 +1273,7 @@ async def next_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ][:2]
         if len(captures) < 2:
             continue
-        draft = await tweet_daily._try_build_draft(
+        draft = await tweet_daily.try_build_draft(
             captures=captures, theme=proposal.theme,
             settings=settings, providers=providers, conn=conn,
         )
@@ -1287,7 +1288,7 @@ async def next_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             char_count=draft["char_count"],
         )
         await update.message.reply_text(
-            tweet_daily._render_draft_dm(
+            tweet_daily.render_draft_dm(
                 draft_text=draft["text"], theme=proposal.theme,
                 char_count=draft["char_count"],
                 draft_count=new_count or pending.draft_count + 1,
@@ -1321,7 +1322,6 @@ async def edit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("no draft pending.")
         return
 
-    from bot.tweet_validate import validate_tweet_total_length
     ok, reason = validate_tweet_total_length(user_text)
     if not ok:
         # Preserve pending so the user can re-edit.
