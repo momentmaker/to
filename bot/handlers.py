@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -1344,3 +1345,98 @@ async def edit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         log.exception("ledger push failed")
     await update.message.reply_text(f"posted: {result.url}")
+
+
+async def _set_tweetable(
+    conn, *, capture_id: int, value: bool,
+) -> bool:
+    """Update payload.tweetable on a capture. Returns True if the row
+    existed."""
+    async with conn.execute(
+        "SELECT payload FROM captures WHERE id = ?", (capture_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        return False
+    try:
+        payload = json.loads(row[0]) if row[0] else {}
+    except json.JSONDecodeError:
+        payload = {}
+    payload["tweetable"] = bool(value)
+    await conn.execute(
+        "UPDATE captures SET payload = ? WHERE id = ?",
+        (json.dumps(payload), capture_id),
+    )
+    # Reset github_sha so next push regenerates frontmatter with the flag.
+    await conn.execute(
+        "UPDATE captures SET github_sha = NULL WHERE id = ?", (capture_id,),
+    )
+    await conn.commit()
+    return True
+
+
+async def _resolve_capture_id(conn, arg: str) -> int | None:
+    if arg == "last":
+        async with conn.execute(
+            "SELECT id FROM captures "
+            "WHERE kind NOT IN ('why','highlight') "
+            "ORDER BY id DESC LIMIT 1"
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row[0]) if row else None
+    try:
+        return int(arg)
+    except ValueError:
+        return None
+
+
+async def _do_tweetable_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, *, value: bool,
+):
+    if not await _ensure_owner(update, context):
+        return
+    if update.message is None:
+        return
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+
+    raw = (update.message.text or "").strip()
+    parts = raw.split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) == 2 else ""
+    if not arg:
+        usage = (
+            "usage: /tweetable last  OR  /tweetable <id>"
+            if value else
+            "usage: /untweetable last  OR  /untweetable <id>"
+        )
+        await update.message.reply_text(usage)
+        return
+
+    capture_id = await _resolve_capture_id(conn, arg)
+    if capture_id is None:
+        await update.message.reply_text(f"no such capture: {arg}")
+        return
+    ok = await _set_tweetable(conn, capture_id=capture_id, value=value)
+    if not ok:
+        await update.message.reply_text(f"capture {capture_id} not found.")
+        return
+
+    # Re-sync the affected capture's md so the repo frontmatter
+    # mirrors SQLite immediately.
+    try:
+        await github_sync.push_capture(
+            capture_id, settings=settings, conn=conn,
+        )
+    except Exception:
+        log.exception("tweetable: re-sync failed for capture %s", capture_id)
+
+    flag = "tweetable" if value else "not tweetable"
+    await update.message.reply_text(f"capture {capture_id}: {flag}.")
+
+
+async def tweetable_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _do_tweetable_command(update, context, value=True)
+
+
+async def untweetable_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _do_tweetable_command(update, context, value=False)
