@@ -115,3 +115,97 @@ async def test_post_handler_post_failure_clears_pending(monkeypatch):
         update.message.reply_text.assert_awaited()
         msg = update.message.reply_text.call_args.args[0]
         assert "post failed" in msg.lower()
+
+
+import json
+
+
+@pytest.mark.asyncio
+async def test_next_handler_increments_and_dms_new_draft(monkeypatch):
+    settings = fake_settings(TELEGRAM_OWNER_ID=1, TWEET_NEXT_CAP=5)
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        for raw in ["new alpha line worth keeping",
+                    "new beta line worth keeping"]:
+            await conn.execute(
+                """
+                INSERT INTO captures (kind, raw, payload, created_at,
+                                      local_date, iso_week_key, fz_week_idx,
+                                      status)
+                VALUES ('text', ?, ?, ?, ?, ?, ?, 'done')
+                """,
+                (raw, json.dumps({"tweetable": True}),
+                 "2026-05-01T12:00:00Z", "2026-05-01", "2026-W18", 1900),
+            )
+        await conn.commit()
+        # Pending references nonexistent captures (placeholders), so the
+        # /next handler's "fresh" filter keeps the real proposal.
+        await tweet_daily.set_pending(
+            conn,
+            draft_text="d1", capture_ids=[99, 100],
+            theme="t", stitch="s", char_count=10,
+            local_date="2026-05-03",
+        )
+
+        async def fake_call(*, purpose, **kwargs):
+            class R:
+                pass
+            r = R()
+            r.text = (
+                json.dumps([{"theme": "u", "capture_ids": [1, 2],
+                             "rationale": ""}])
+                if purpose == "ingest"
+                else json.dumps({"stitch": "you noticed twice."})
+            )
+            return r
+
+        monkeypatch.setattr("bot.tweet_daily.call_llm", fake_call)
+
+        update = _update("/next")
+        ctx = _ctx(conn=conn, settings=settings)
+        await handlers.next_handler(update, ctx)
+
+        p = await tweet_daily.get_pending(conn)
+        assert p.draft_count == 2
+        update.message.reply_text.assert_awaited()
+        assert "draft 2/5" in update.message.reply_text.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_next_handler_blocks_at_cap():
+    settings = fake_settings(TELEGRAM_OWNER_ID=1, TWEET_NEXT_CAP=5)
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        await tweet_daily.set_pending(
+            conn, draft_text="d", capture_ids=[1, 2],
+            theme="t", stitch="s", char_count=10,
+            local_date="2026-05-03",
+        )
+        # Bump draft_count to cap
+        await conn.execute(
+            "UPDATE kv SET value = json_set(value, '$.draft_count', 5) "
+            "WHERE key = ?", (tweet_daily._KV_KEY,),
+        )
+        await conn.commit()
+
+        update = _update("/next")
+        ctx = _ctx(conn=conn, settings=settings)
+        await handlers.next_handler(update, ctx)
+        update.message.reply_text.assert_awaited()
+        msg = update.message.reply_text.call_args.args[0].lower()
+        assert "exhausted" in msg
+
+
+@pytest.mark.asyncio
+async def test_next_handler_no_pending_replies_idle():
+    settings = fake_settings(TELEGRAM_OWNER_ID=1)
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        update = _update("/next")
+        ctx = _ctx(conn=conn, settings=settings)
+        await handlers.next_handler(update, ctx)
+        update.message.reply_text.assert_awaited()
+        assert "no draft" in update.message.reply_text.call_args.args[0].lower()
