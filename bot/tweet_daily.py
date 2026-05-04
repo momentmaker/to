@@ -11,18 +11,30 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
-from typing import Any
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, NamedTuple
 
 import aiosqlite
+import grapheme
 
 from bot.config import Settings
+from bot.github_sync import fetch_file, put_file
 from bot.llm.base import Message
 from bot.llm.router import Providers, call_llm
 from bot.persona import VOICE_ORCHURATOR
 from bot.prompts import SYSTEM_TWEET_STITCH
 
 log = logging.getLogger(__name__)
+
+
+# ---- module-level constants ---------------------------------------------
+
+_TCO_LEN = 23
+_TWEET_MAX = 280
+_MIN_QUOTE_LEN = 30
+
+_KV_KEY = "pending_tweet_draft"
+_LEDGER_FILENAME = "tweeted.json"
 
 
 @dataclass
@@ -210,13 +222,6 @@ async def generate_stitch(
     return s.strip() if isinstance(s, str) else ""
 
 
-import grapheme
-
-_TCO_LEN = 23
-_TWEET_MAX = 280
-_MIN_QUOTE_LEN = 30
-
-
 def _word_truncate(text: str, max_len: int) -> str:
     """Truncate `text` to ≤ max_len graphemes at a word boundary.
     Returns empty string when max_len < 1."""
@@ -308,12 +313,6 @@ def assemble_tweet(
     if grapheme.length(measured) > _TWEET_MAX:
         return None
     return out
-
-
-from datetime import datetime, timezone
-from typing import NamedTuple
-
-_KV_KEY = "pending_tweet_draft"
 
 
 class PendingDraft(NamedTuple):
@@ -470,11 +469,6 @@ async def expire_if_stale(
     return False
 
 
-from bot.github_sync import fetch_file, put_file
-
-_LEDGER_FILENAME = "tweeted.json"
-
-
 async def record_tweet(
     conn: aiosqlite.Connection,
     *,
@@ -534,7 +528,7 @@ async def push_ledger_to_repo(*, settings: Settings, record: dict) -> None:
         log.exception("push_ledger_to_repo: put failed")
 
 
-def _format_pool_for_themes(pool: list[aiosqlite.Row]) -> str:
+def format_pool_for_themes(pool: list[aiosqlite.Row]) -> str:
     lines = []
     for r in pool[:30]:
         title = ""
@@ -553,7 +547,7 @@ def _format_pool_for_themes(pool: list[aiosqlite.Row]) -> str:
     return "\n".join(lines)
 
 
-def _render_draft_dm(
+def render_draft_dm(
     *, draft_text: str, theme: str, char_count: int,
     draft_count: int, cap: int,
 ) -> str:
@@ -565,7 +559,7 @@ def _render_draft_dm(
     )
 
 
-async def _try_build_draft(
+async def try_build_draft(
     *,
     captures: list[aiosqlite.Row],
     theme: str,
@@ -641,7 +635,7 @@ async def daily_tweet_draft_job(
         return False
 
     proposals = await detect_themes(
-        pool_summary=_format_pool_for_themes(pool),
+        pool_summary=format_pool_for_themes(pool),
         settings=settings, providers=providers, conn=conn,
     )
     if not proposals:
@@ -658,7 +652,7 @@ async def daily_tweet_draft_job(
         ][:2]
         if len(captures) < 2:
             continue
-        draft = await _try_build_draft(
+        draft = await try_build_draft(
             captures=captures, theme=proposal.theme,
             settings=settings, providers=providers, conn=conn,
         )
@@ -676,7 +670,7 @@ async def daily_tweet_draft_job(
         try:
             await bot.send_message(
                 chat_id=settings.TELEGRAM_OWNER_ID,
-                text=_render_draft_dm(
+                text=render_draft_dm(
                     draft_text=draft["text"], theme=proposal.theme,
                     char_count=draft["char_count"], draft_count=1,
                     cap=settings.TWEET_NEXT_CAP,

@@ -279,9 +279,6 @@ async def test_asset_path_for_returns_none_without_asset(conn):
     assert asset_path_for(row2) is None
 
 
-import json as _json_for_tweetable_tests
-
-
 class _FakeRow(dict):
     def __getitem__(self, key):
         try:
@@ -294,7 +291,7 @@ def _row_with_payload(payload_dict):
     return _FakeRow(
         id=1, kind="text", source=None, url=None,
         raw="hello",
-        payload=_json_for_tweetable_tests.dumps(payload_dict),
+        payload=json.dumps(payload_dict),
         processed="{}",
         parent_id=None, telegram_msg_id=None,
         created_at="2026-05-01T12:00:00Z", local_date="2026-05-01",

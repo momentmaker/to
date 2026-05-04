@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
@@ -115,9 +117,6 @@ async def test_post_handler_post_failure_clears_pending(monkeypatch):
         update.message.reply_text.assert_awaited()
         msg = update.message.reply_text.call_args.args[0]
         assert "post failed" in msg.lower()
-
-
-import json
 
 
 @pytest.mark.asyncio

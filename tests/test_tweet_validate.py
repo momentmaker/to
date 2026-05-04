@@ -1,4 +1,4 @@
-from bot.tweet_validate import validate_stitch
+from bot.tweet_validate import validate_stitch, validate_tweet_total_length
 
 
 def _ok(text):
@@ -71,9 +71,6 @@ def test_two_sentences_fails():
 def test_period_terminator_optional():
     _ok("you caught the asymmetry —")
     _ok("you caught the asymmetry")  # no terminator allowed
-
-
-from bot.tweet_validate import validate_tweet_total_length
 
 
 def test_short_tweet_passes():
