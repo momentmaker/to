@@ -52,13 +52,13 @@ def validate_stitch(text: str) -> tuple[bool, str | None]:
         return False, "punctuation: ellipsis not allowed"
 
     char_count = grapheme.length(s)
-    if char_count > 80:
-        return False, f"chars: {char_count} > 80"
+    if char_count > 180:
+        return False, f"chars: {char_count} > 180"
     words = _words(s)
     if not words:
         return False, "empty stitch"
-    if len(words) > 15:
-        return False, f"words: {len(words)} > 15"
+    if len(words) > 30:
+        return False, f"words: {len(words)} > 30"
 
     for tok in words:
         if tok in _FIRST_PERSON_TOKENS:
@@ -70,9 +70,11 @@ def validate_stitch(text: str) -> tuple[bool, str | None]:
         if tok in _FORBIDDEN_VERBS:
             return False, f"forbidden verb: {tok!r}"
 
+    # Allow 1-2 sentences. Body has the trailing terminator stripped, so
+    # one internal period = two-sentence stitch (the max).
     body = s.rstrip(".—")
-    if re.search(r"[.!?]", body):
-        return False, "sentence: more than one"
+    if body.count(".") > 1:
+        return False, "sentence: more than two"
 
     return True, None
 

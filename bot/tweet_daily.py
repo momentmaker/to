@@ -200,118 +200,93 @@ async def generate_stitch(
     settings: Settings,
     providers: Providers,
     conn: aiosqlite.Connection,
-) -> str:
-    """Call the tweet-purpose LLM to produce one stitch sentence.
-    `capture_summaries` is a list of (date, body) tuples.
-    Returns "" on any failure (caller should retry or abandon)."""
+    weekday: str | None = None,
+) -> dict | None:
+    """Call the tweet-purpose LLM to produce a stitched draft.
+
+    Returns a dict with keys {shape, stitch, lead_quote} or None on
+    failure. shape ∈ {"insight", "quote_led", "temporal"}. lead_quote
+    is set only when shape == "quote_led" and is expected to be a
+    verbatim substring of one capture body.
+
+    `weekday` is a 3-letter lowercase hint ("mon", "tue", ...) that
+    tilts the LLM's shape choice (Wed→question texture, Fri→quote_led).
+    """
     body_lines = "\n".join(
         f'  ({date}) "{body}"' for date, body in capture_summaries
     )
-    user_content = f"Theme: {theme}\n\nCaptures:\n{body_lines}"
+    parts = [f"Theme: {theme}", "", "Captures:", body_lines]
+    if weekday:
+        parts.extend(["", f"day-of-week hint: {weekday}"])
+    user_content = "\n".join(parts)
     try:
         response = await call_llm(
             purpose="tweet",
             system_blocks=[VOICE_ORCHURATOR, SYSTEM_TWEET_STITCH],
             messages=[Message(role="user", content=user_content)],
-            max_tokens=200,
+            max_tokens=400,
             settings=settings, providers=providers, conn=conn,
         )
     except Exception:
         log.exception("generate_stitch: LLM call failed")
-        return ""
+        return None
     obj = _coerce_json(response.text)
     if not isinstance(obj, dict):
-        return ""
-    s = obj.get("stitch")
-    return s.strip() if isinstance(s, str) else ""
+        return None
+    stitch = obj.get("stitch")
+    if not isinstance(stitch, str) or not stitch.strip():
+        return None
+    shape = obj.get("shape")
+    if shape not in ("insight", "quote_led", "temporal"):
+        shape = "insight"
+    lead_quote = obj.get("lead_quote")
+    if not isinstance(lead_quote, str) or not lead_quote.strip():
+        lead_quote = None
+    return {
+        "shape": shape,
+        "stitch": stitch.strip(),
+        "lead_quote": lead_quote.strip() if lead_quote else None,
+    }
 
 
-def _word_truncate(text: str, max_len: int) -> str:
-    """Truncate `text` to ≤ max_len graphemes at a word boundary.
-    Returns empty string when max_len < 1."""
-    if max_len < 1:
-        return ""
-    if grapheme.length(text) <= max_len:
-        return text
-    chars = list(grapheme.graphemes(text))
-    cut = "".join(chars[:max_len])
-    space = cut.rfind(" ")
-    if space > 0:
-        cut = cut[:space]
-    return cut.rstrip()
+def _pick_url(captures: list[dict]) -> str | None:
+    """Pick the URL for the tweet's URL line. When multiple captures
+    are kind='url', take the oldest. None if no URL captures."""
+    url_caps = [c for c in captures if c.get("kind") == "url" and c.get("url")]
+    if not url_caps:
+        return None
+    url_caps.sort(key=lambda c: c.get("local_date") or "")
+    return url_caps[0]["url"]
 
 
 def assemble_tweet(
     *,
+    shape: str,
     stitch: str,
     captures: list[dict],
+    lead_quote: str | None = None,
 ) -> str | None:
-    """Compose the final tweet text. Returns None if the captures cannot
-    be made to fit (any required quote would shrink below 30 chars).
+    """Compose the final tweet text in one of three shapes. Returns the
+    rendered tweet string, or None if the result exceeds 280 graphemes.
 
-    Format:
-        <stitch>
-
-        — "<quote 1>" (YYYY-MM-DD)
-        — "<quote 2>" (YYYY-MM-DD)
-        [<url>]
+    Shapes:
+        insight  — <stitch>\\n\\n<url?>
+        quote_led — "<lead_quote>"\\n\\n<stitch>\\n\\n<url?>
+        temporal — <stitch>\\n\\n<url?>     (same render as insight; the
+                                              time-gap nuance is in the
+                                              stitch text itself)
     """
     if not stitch or not captures or len(captures) < 2:
         return None
-    cap_pair = captures[:2]
+    url = _pick_url(captures)
 
-    url_caps = [c for c in cap_pair if c.get("kind") == "url" and c.get("url")]
-    url = None
-    if url_caps:
-        url_caps.sort(key=lambda c: c.get("local_date") or "")
-        url = url_caps[0]["url"]
-
-    overhead_per_line = 18
-    overhead_total = grapheme.length(stitch) + 2 + (overhead_per_line * 2)
+    if shape == "quote_led" and lead_quote:
+        body_lines = [f'"{lead_quote.strip()}"', "", stitch.strip()]
+    else:
+        body_lines = [stitch.strip()]
     if url:
-        overhead_total += 1 + _TCO_LEN
-
-    available = _TWEET_MAX - overhead_total
-    if available < _MIN_QUOTE_LEN * 2:
-        return None
-
-    bodies = [(c.get("raw") or "").strip() for c in cap_pair]
-    if not all(bodies):
-        return None
-    body_lens = [grapheme.length(b) for b in bodies]
-    if sum(body_lens) == 0:
-        return None
-
-    # Iterative shortest-first allocation:
-    # - Process bodies in length-ascending order so short bodies can stay
-    #   verbatim and yield their unused budget to longer ones.
-    # - For each body, reserve MIN_QUOTE_LEN per remaining body so the
-    #   final quota is never forced below the floor on a long body.
-    indexed = sorted(range(len(bodies)), key=lambda i: body_lens[i])
-    remaining_budget = available
-    truncated_by_idx: dict[int, str] = {}
-    for n, idx in enumerate(indexed):
-        bodies_left_after = len(indexed) - n - 1
-        fair_max = remaining_budget - bodies_left_after * _MIN_QUOTE_LEN
-        if fair_max < _MIN_QUOTE_LEN and body_lens[idx] > fair_max:
-            return None  # would force a long body below the floor
-        quota = min(body_lens[idx], fair_max)
-        if quota >= body_lens[idx]:
-            t = bodies[idx]
-        else:
-            t = _word_truncate(bodies[idx], quota)
-            if grapheme.length(t) < _MIN_QUOTE_LEN:
-                return None
-        truncated_by_idx[idx] = t
-        remaining_budget -= grapheme.length(t)
-    truncated = [truncated_by_idx[i] for i in range(len(bodies))]
-
-    lines = [stitch.strip(), ""]
-    for body, cap in zip(truncated, cap_pair):
-        lines.append(f'— "{body}" ({cap["local_date"]})')
-    if url:
-        lines.append(url)
-    out = "\n".join(lines)
+        body_lines.extend(["", url])
+    out = "\n".join(body_lines)
 
     measured = re.sub(r"https?://\S+", "x" * _TCO_LEN, out)
     if grapheme.length(measured) > _TWEET_MAX:
@@ -542,6 +517,7 @@ async def push_ledger_to_repo(*, settings: Settings, record: dict) -> None:
 def format_pool_for_themes(pool: list[aiosqlite.Row]) -> str:
     lines = []
     for r in pool[:30]:
+        d = dict(r)
         title = ""
         try:
             p = json.loads(r["processed"]) if r["processed"] else None
@@ -549,9 +525,11 @@ def format_pool_for_themes(pool: list[aiosqlite.Row]) -> str:
                 title = (p.get("title") or "").strip()
         except (TypeError, json.JSONDecodeError):
             pass
-        body = (r["raw"] or "")[:240].replace("\n", " ").strip()
+        # Use the voice-body (LLM summary for URL captures, raw for text)
+        # so theme detection has substantive content to rhyme on.
+        body = _capture_body_for_voice(d)[:240].replace("\n", " ").strip()
         prefix = f"[{r['id']}] ({r['kind']}) "
-        if title:
+        if title and title not in body:
             lines.append(prefix + f"{title}: {body}")
         else:
             lines.append(prefix + body)
@@ -570,6 +548,61 @@ def render_draft_dm(
     )
 
 
+def _capture_body_for_voice(c: dict) -> str:
+    """The most useful 'body' representation of a capture for theme
+    detection and stitch generation. For URL captures, prefer the LLM
+    summary or scrape title over the raw URL string (which carries
+    almost no signal). For everything else, use raw.
+    """
+    if c.get("kind") == "url":
+        processed = c.get("processed")
+        if isinstance(processed, str):
+            try:
+                processed = json.loads(processed)
+            except json.JSONDecodeError:
+                processed = None
+        if isinstance(processed, dict):
+            for key in ("summary", "title"):
+                v = processed.get(key)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+            quotes = processed.get("quotes")
+            if isinstance(quotes, list):
+                for q in quotes:
+                    if isinstance(q, str) and q.strip():
+                        return q.strip()
+        payload = c.get("payload")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = None
+        if isinstance(payload, dict):
+            scrape = payload.get("scrape") or {}
+            if isinstance(scrape, dict):
+                for key in ("title", "text"):
+                    v = scrape.get(key)
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()[:300]
+    return (c.get("raw") or "").strip()
+
+
+def _is_verbatim_substring(needle: str, captures: list[dict]) -> bool:
+    """True iff `needle` appears as a normalized substring of any
+    capture's voice body."""
+    from bot.digest.validate import normalize_for_quote_check
+    needle_n = normalize_for_quote_check(needle)
+    if not needle_n:
+        return False
+    for c in captures:
+        body = _capture_body_for_voice(c)
+        if not body:
+            continue
+        if needle_n in normalize_for_quote_check(body):
+            return True
+    return False
+
+
 async def try_build_draft(
     *,
     captures: list[aiosqlite.Row],
@@ -577,31 +610,49 @@ async def try_build_draft(
     settings: Settings,
     providers: Providers,
     conn: aiosqlite.Connection,
+    weekday: str | None = None,
 ) -> dict | None:
     """Up to 3 stitch attempts for this capture+theme combination.
-    Returns dict {text, stitch, char_count} or None on total failure.
+    Returns dict {text, stitch, shape, char_count} or None on total
+    failure.
 
-    Note: no separate quote-substring validator runs here. assemble_tweet
-    builds each quote by `_word_truncate(body, ...)` which is a pure
-    prefix operation, so the rendered quote is always a substring of its
-    source capture body by construction. The verbatim invariant is
-    enforced structurally, not at validation time.
+    Verbatim invariant: when shape == "quote_led" the LLM-supplied
+    lead_quote MUST be a normalized substring of one capture's body.
+    Otherwise the attempt is rejected and we retry. assemble_tweet
+    itself never invents quote text.
     """
-    summaries = [(c["local_date"], (c["raw"] or "").strip()) for c in captures]
     cap_dicts = [dict(c) for c in captures]
+    summaries = [(c["local_date"], _capture_body_for_voice(dict(c))) for c in captures]
 
     for _ in range(3):
-        stitch = await generate_stitch(
+        gen = await generate_stitch(
             theme=theme, capture_summaries=summaries,
             settings=settings, providers=providers, conn=conn,
+            weekday=weekday,
         )
-        if not stitch:
+        if gen is None:
             continue
+        stitch = gen["stitch"]
+        shape = gen["shape"]
+        lead_quote = gen.get("lead_quote")
+
         ok, reason = validate_stitch(stitch)
         if not ok:
             log.info("stitch invalid: %s", reason)
             continue
-        text = assemble_tweet(stitch=stitch, captures=cap_dicts)
+
+        if shape == "quote_led":
+            if not lead_quote:
+                log.info("quote_led but lead_quote missing, retry")
+                continue
+            if not _is_verbatim_substring(lead_quote, cap_dicts):
+                log.info("quote_led lead_quote not in any capture, retry")
+                continue
+
+        text = assemble_tweet(
+            shape=shape, stitch=stitch,
+            lead_quote=lead_quote, captures=cap_dicts,
+        )
         if text is None:
             continue
         ok2, reason2 = validate_tweet_total_length(text)
@@ -612,6 +663,7 @@ async def try_build_draft(
         return {
             "text": text,
             "stitch": stitch,
+            "shape": shape,
             "char_count": grapheme.length(measured),
         }
     return None
@@ -638,6 +690,7 @@ async def daily_tweet_draft_job(
         return "no Telegram owner / bot configured"
 
     today_iso = today_iso or date.today().isoformat()
+    weekday = date.fromisoformat(today_iso).strftime("%a").lower()
 
     await expire_if_stale(conn, today_local=today_iso)
     if not force and await get_pending(conn) is not None:
@@ -692,6 +745,7 @@ async def daily_tweet_draft_job(
         draft = await try_build_draft(
             captures=captures, theme=proposal.theme,
             settings=settings, providers=providers, conn=conn,
+            weekday=weekday,
         )
         if draft is None:
             continue

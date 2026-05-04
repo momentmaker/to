@@ -1271,6 +1271,8 @@ async def next_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     today_iso = pending.local_date
+    from datetime import date as _date
+    weekday = _date.fromisoformat(today_iso).strftime("%a").lower()
     pool = await tweet_daily.pick_eligible_pool(
         conn, settings=settings, today_iso=today_iso,
     )
@@ -1307,6 +1309,7 @@ async def next_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         draft = await tweet_daily.try_build_draft(
             captures=captures, theme=proposal.theme,
             settings=settings, providers=providers, conn=conn,
+            weekday=weekday,
         )
         if draft is None:
             continue

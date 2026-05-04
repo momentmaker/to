@@ -342,27 +342,41 @@ The pipeline itself is also off until you set
 
   draft 1/5
 
-  you caught the asymmetry between what's kept on you and what you keep.
+  privacy stopped being a place. it became a pattern of who keeps what
+  on whom.
 
-  — "crazy last of privacy for employees" (2026-04-22)
-  — "didn't even know someone kept this data" (2026-04-21)
+  https://example.com/article
 
-  178/280 chars · theme: privacy-asymmetry
+  98/280 chars · theme: privacy-asymmetry
 
   /post   /next   /edit <text>   /skip
 ```
 
-`/post` ships it. `/next` discards and regenerates with a different
-capture pair (capped at `TWEET_NEXT_CAP=5` per day). `/edit <text>`
-posts your verbatim text instead, subject only to X's 280-char limit.
-`/skip` clears the draft. Ignored drafts silently expire at local
-midnight — no auto-post, no nag.
+`/post` ships it. `/next` discards and regenerates (capped at
+`TWEET_NEXT_CAP=5` per day). `/edit <text>` posts your verbatim text
+instead, subject only to X's 280-char limit. `/skip` clears the draft.
+Ignored drafts silently expire at local midnight — no auto-post, no nag.
 
-**Verbatim by construction.** The orchurator stitch is the only
-original prose; the quotes are sliced from your capture bodies via
-prefix truncation, so the rendered quotes are always substrings of
-their source. The stitch is bounded by `bot/tweet_validate.py` —
-no advice verbs, no first-person, no hashtags, no emoji, no questions.
+`/draft` force-fires the pipeline on demand (mirrors `/reflect` and
+`/export`).
+
+**Three tweet shapes.** The LLM picks per draft based on the captures:
+- **insight** — the synthesis tweet (default). Stitch carries the
+  meaning; URL provides the receipt.
+- **quote_led** — when one capture has a striking line. Lead with the
+  verbatim quote, resolve in one short sentence.
+- **temporal** — when captures span weeks/months and the time gap is
+  the point. Stitch acknowledges it.
+
+A day-of-week hint tilts the LLM's choice (Wed leans question-shaped,
+Fri leans `quote_led`).
+
+**Verbatim by construction.** When the LLM picks `quote_led`, the
+lead_quote is verified as a normalized substring of one capture body
+before assembly — no paraphrase, no invention. The stitch itself is
+the only original prose. Bounded by `bot/tweet_validate.py` — ≤180
+chars, ≤30 words, 1-2 sentences max, no advice verbs, no first-person,
+no hashtags, no emoji, no questions, no line breaks.
 
 **Theme self-balancing.** Each tweet records its theme in a SQLite
 ledger plus `tweeted.json` at the captures repo root. The next

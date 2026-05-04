@@ -124,7 +124,7 @@ async def test_pick_theme_returns_none_for_empty():
 
 
 @pytest.mark.asyncio
-async def test_generate_stitch_returns_string(monkeypatch):
+async def test_generate_stitch_returns_dict_with_default_shape(monkeypatch):
     settings = fake_settings()
     async with aiosqlite.connect(":memory:") as conn:
         conn.row_factory = aiosqlite.Row
@@ -132,12 +132,15 @@ async def test_generate_stitch_returns_string(monkeypatch):
 
         async def fake_call(**kwargs):
             class R:
-                text = json.dumps({"stitch": "you caught the asymmetry."})
+                text = json.dumps({
+                    "shape": "insight",
+                    "stitch": "you caught the asymmetry.",
+                })
             return R()
 
         monkeypatch.setattr("bot.tweet_daily.call_llm", fake_call)
 
-        s = await tweet_daily.generate_stitch(
+        out = await tweet_daily.generate_stitch(
             theme="privacy",
             capture_summaries=[
                 ("2026-04-22", "crazy last of privacy for employees"),
@@ -145,11 +148,68 @@ async def test_generate_stitch_returns_string(monkeypatch):
             ],
             settings=settings, providers=FakeProviders(), conn=conn,
         )
-        assert s == "you caught the asymmetry."
+        assert out == {
+            "shape": "insight",
+            "stitch": "you caught the asymmetry.",
+            "lead_quote": None,
+        }
 
 
 @pytest.mark.asyncio
-async def test_generate_stitch_returns_empty_on_llm_failure(monkeypatch):
+async def test_generate_stitch_quote_led_keeps_lead_quote(monkeypatch):
+    settings = fake_settings()
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+
+        async def fake_call(**kwargs):
+            class R:
+                text = json.dumps({
+                    "shape": "quote_led",
+                    "lead_quote": "using samurai swords to cut",
+                    "stitch": "the smallest blade finishes the work.",
+                })
+            return R()
+
+        monkeypatch.setattr("bot.tweet_daily.call_llm", fake_call)
+
+        out = await tweet_daily.generate_stitch(
+            theme="craft",
+            capture_summaries=[("2026-04-26", "samurai")],
+            settings=settings, providers=FakeProviders(), conn=conn,
+        )
+        assert out["shape"] == "quote_led"
+        assert out["lead_quote"] == "using samurai swords to cut"
+        assert out["stitch"] == "the smallest blade finishes the work."
+
+
+@pytest.mark.asyncio
+async def test_generate_stitch_unknown_shape_falls_back_to_insight(monkeypatch):
+    settings = fake_settings()
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+
+        async def fake_call(**kwargs):
+            class R:
+                text = json.dumps({
+                    "shape": "haiku",  # not a known shape
+                    "stitch": "you saw it.",
+                })
+            return R()
+
+        monkeypatch.setattr("bot.tweet_daily.call_llm", fake_call)
+
+        out = await tweet_daily.generate_stitch(
+            theme="x",
+            capture_summaries=[("2026-01-01", "a")],
+            settings=settings, providers=FakeProviders(), conn=conn,
+        )
+        assert out["shape"] == "insight"
+
+
+@pytest.mark.asyncio
+async def test_generate_stitch_returns_none_on_llm_failure(monkeypatch):
     settings = fake_settings()
     async with aiosqlite.connect(":memory:") as conn:
         conn.row_factory = aiosqlite.Row
@@ -160,16 +220,16 @@ async def test_generate_stitch_returns_empty_on_llm_failure(monkeypatch):
 
         monkeypatch.setattr("bot.tweet_daily.call_llm", fake_call)
 
-        s = await tweet_daily.generate_stitch(
+        out = await tweet_daily.generate_stitch(
             theme="x",
             capture_summaries=[("2026-01-01", "a")],
             settings=settings, providers=FakeProviders(), conn=conn,
         )
-        assert s == ""
+        assert out is None
 
 
 @pytest.mark.asyncio
-async def test_generate_stitch_returns_empty_on_malformed_json(monkeypatch):
+async def test_generate_stitch_returns_none_on_malformed_json(monkeypatch):
     settings = fake_settings()
     async with aiosqlite.connect(":memory:") as conn:
         conn.row_factory = aiosqlite.Row
@@ -182,9 +242,9 @@ async def test_generate_stitch_returns_empty_on_malformed_json(monkeypatch):
 
         monkeypatch.setattr("bot.tweet_daily.call_llm", fake_call)
 
-        s = await tweet_daily.generate_stitch(
+        out = await tweet_daily.generate_stitch(
             theme="x",
             capture_summaries=[("2026-01-01", "a")],
             settings=settings, providers=FakeProviders(), conn=conn,
         )
-        assert s == ""
+        assert out is None

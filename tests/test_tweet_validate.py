@@ -27,12 +27,21 @@ def test_whitespace_only_fails():
 
 
 def test_too_long_word_count_fails():
-    # 16 short words, 47 chars — within char cap, over word cap.
-    _bad("a b c d e f g h i j k l m n o p.", "words")
+    # 31 short words — within char cap, over the new 30-word cap.
+    words = " ".join(f"w{i}" for i in range(31)) + "."
+    _bad(words, "words")
 
 
 def test_too_long_chars_fails():
     _bad("you noticed " + "x" * 200, "chars")
+
+
+def test_two_sentences_pass():
+    _ok("you caught it. you kept it.")
+
+
+def test_three_sentences_fail():
+    _bad("a is one. b is two. c is three.", "sentence")
 
 
 def test_first_person_singular_fails():
@@ -62,10 +71,6 @@ def test_hashtag_fails():
 def test_ellipsis_fails():
     _bad("you noticed... again.", "punctuation")
     _bad("you noticed … again.", "punctuation")
-
-
-def test_two_sentences_fails():
-    _bad("you caught it. you kept it.", "sentence")
 
 
 def test_period_terminator_optional():
