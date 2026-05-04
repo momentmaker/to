@@ -1386,10 +1386,12 @@ async def _set_tweetable(
         "UPDATE captures SET payload = ? WHERE id = ?",
         (json.dumps(payload), capture_id),
     )
-    # Reset github_sha so next push regenerates frontmatter with the flag.
-    await conn.execute(
-        "UPDATE captures SET github_sha = NULL WHERE id = ?", (capture_id,),
-    )
+    # Do NOT reset github_sha here. push_capture re-renders the markdown
+    # from the live row (with the updated payload) and PUTs with the
+    # existing sha — that's how GitHub's contents API expects updates.
+    # Resetting to NULL would cause the next PUT to be treated as a
+    # create, which the API rejects with 422 because the file already
+    # exists.
     await conn.commit()
     return True
 
@@ -1442,15 +1444,26 @@ async def _do_tweetable_command(
 
     # Re-sync the affected capture's md so the repo frontmatter
     # mirrors SQLite immediately.
+    sync_failed = False
     try:
         await github_sync.push_capture(
             capture_id, settings=settings, conn=conn,
         )
     except Exception:
+        sync_failed = True
         log.exception("tweetable: re-sync failed for capture %s", capture_id)
 
     flag = "tweetable" if value else "not tweetable"
-    await update.message.reply_text(f"capture {capture_id}: {flag}.")
+    if sync_failed:
+        # Tell the user explicitly so they can re-run the command or
+        # rely on nightly_sync to catch up. The SQLite payload IS already
+        # updated; only the repo .md file is stale.
+        await update.message.reply_text(
+            f"capture {capture_id}: {flag}. "
+            f"(repo re-sync failed — nightly_sync will retry)"
+        )
+    else:
+        await update.message.reply_text(f"capture {capture_id}: {flag}.")
 
 
 async def tweetable_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
