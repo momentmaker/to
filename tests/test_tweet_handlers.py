@@ -308,3 +308,108 @@ async def test_skip_clears_pending_tweet_draft():
         ctx = _ctx(conn=conn, settings=settings)
         await handlers.skip_handler(update, ctx)
         assert await tweet_daily.get_pending(conn) is None
+
+
+@pytest.mark.asyncio
+async def test_draft_handler_force_fires_pipeline(monkeypatch):
+    """`/draft` bypasses TWEET_DAILY_V2_ENABLED and clears any existing
+    pending so a fresh draft is generated immediately."""
+    settings = fake_settings(
+        TELEGRAM_OWNER_ID=1,
+        TWEET_DAILY_V2_ENABLED=False,  # explicit: master flag is OFF
+        TIMEZONE="UTC",
+    )
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        for raw in ["alpha line worth keeping",
+                    "beta line worth keeping"]:
+            await conn.execute(
+                """
+                INSERT INTO captures (kind, raw, payload, created_at,
+                                      local_date, iso_week_key,
+                                      fz_week_idx, status)
+                VALUES ('text', ?, ?, ?, ?, ?, ?, 'done')
+                """,
+                (raw, json.dumps({"tweetable": True}),
+                 "2026-05-01T12:00:00Z", "2026-05-01",
+                 "2026-W18", 1900),
+            )
+        await conn.commit()
+        # Pre-existing pending from a prior /draft — should be cleared.
+        await tweet_daily.set_pending(
+            conn,
+            draft_text="stale", capture_ids=[99],
+            theme="t", stitch="s", char_count=10,
+            local_date="2026-05-03",
+        )
+
+        async def fake_call(*, purpose, **kwargs):
+            class R:
+                pass
+            r = R()
+            r.text = (
+                json.dumps([{"theme": "tt", "capture_ids": [1, 2],
+                             "rationale": ""}])
+                if purpose == "ingest"
+                else json.dumps({"stitch": "you saw both."})
+            )
+            return r
+
+        monkeypatch.setattr("bot.tweet_daily.call_llm", fake_call)
+
+        sent: list = []
+
+        class FakeBot:
+            async def send_message(self, *, chat_id, text):
+                sent.append((chat_id, text))
+
+        update = _update("/draft")
+        ctx = _ctx(conn=conn, settings=settings)
+        ctx.bot = FakeBot()
+        await handlers.draft_handler(update, ctx)
+
+        # Bot was DM'd a fresh draft despite the master flag being off.
+        assert len(sent) == 1
+        assert "you saw both." in sent[0][1]
+        # Pending now reflects the new draft (capture_ids 1,2 — not 99).
+        p = await tweet_daily.get_pending(conn)
+        assert p is not None
+        assert p.capture_ids == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_draft_handler_replies_when_pool_empty():
+    settings = fake_settings(TELEGRAM_OWNER_ID=1, TWEET_DAILY_V2_ENABLED=False)
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+
+        update = _update("/draft")
+        ctx = _ctx(conn=conn, settings=settings)
+        ctx.bot = MagicMock()
+        await handlers.draft_handler(update, ctx)
+
+        update.message.reply_text.assert_awaited()
+        msg = update.message.reply_text.call_args.args[0]
+        assert "couldn't draft" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_draft_handler_no_providers():
+    settings = fake_settings(TELEGRAM_OWNER_ID=1)
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+
+        update = _update("/draft")
+        ctx = MagicMock()
+        ctx.bot_data = {
+            "conn": conn, "db": conn,
+            "settings": settings,
+            "providers": None,
+        }
+        ctx.bot = MagicMock()
+        await handlers.draft_handler(update, ctx)
+        update.message.reply_text.assert_awaited()
+        assert "LLM" in update.message.reply_text.call_args.args[0]

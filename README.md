@@ -56,6 +56,7 @@ highlight - attach a passage to a capture (as reply)
 forget - delete a capture (id or "last")
 export - force weekly digest (opt-in)
 tweetweekly - post the weekly tweet from digest.md
+draft - force-fire the daily tweet draft now
 post - post the pending daily tweet draft
 next - regenerate the pending tweet draft
 edit - post your own version of the tweet draft
@@ -227,6 +228,7 @@ Then send anything — a line you overheard, a link, a photo of a book page, a v
 | `/setvow <text>` | Pin the line you want above the year in fz.ax |
 | `/export` | Force the weekly digest + fz.ax backup to regenerate now (opt-in cron; this always works regardless) |
 | `/tweetweekly [YYYY-wNN]` | Read `<week>/digest.md` from the captures repo and post a ≤260-char tweet drawn from it. Defaults to the current week. Use this if you run the digest locally — the auto-tweet only fires when the bot runs the digest itself |
+| `/draft` | Force-fire the daily tweet draft job now. Bypasses `TWEET_DAILY_V2_ENABLED` so you can test the pipeline before flipping the master switch. Clears any existing pending and regenerates. |
 | `/post` | Post the current pending daily tweet draft to X. Writes the row to the SQLite ledger and pushes `tweeted.json` to the captures repo |
 | `/next` | Discard the pending draft and regenerate with a different capture pair. Capped at `TWEET_NEXT_CAP` regenerations per day |
 | `/edit <text>` | Post your own version of the pending draft. Subject only to X's 280-char hard limit |
