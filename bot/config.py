@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     SPARKS_ENABLED: bool = True
     SPARKS_LOCAL_TIME: str = "06:00"
 
+    TWEET_DAILY_V2_ENABLED: bool = False
+    TWEET_DRAFT_LOCAL_TIME: str = "09:00"
+    TWEET_NEXT_CAP: int = 5
+    TWEET_POOL_DAYS: int = 14
+
     X_DAILY_ENABLED: bool = False
     X_WEEKLY_ENABLED: bool = False
     X_CONSUMER_KEY: str = ""
