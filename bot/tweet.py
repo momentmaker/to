@@ -42,6 +42,12 @@ def _oauth_configured(settings: Settings) -> bool:
     ])
 
 
+def is_oauth_configured(settings: Settings) -> bool:
+    """Public wrapper around `_oauth_configured` for callers outside
+    this module (e.g. boot-time validation in bot_app.py)."""
+    return _oauth_configured(settings)
+
+
 # ---- text preparation ----------------------------------------------------
 
 def _coerce_tweet_text(raw: str) -> str:
