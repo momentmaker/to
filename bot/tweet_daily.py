@@ -468,3 +468,67 @@ async def expire_if_stale(
         )
         return True
     return False
+
+
+from bot.github_sync import fetch_file, put_file
+
+_LEDGER_FILENAME = "tweeted.json"
+
+
+async def record_tweet(
+    conn: aiosqlite.Connection,
+    *,
+    tweet_id: str,
+    tweeted_at: str,
+    local_date: str,
+    capture_ids: list[int],
+    theme: str | None,
+    stitch: str | None,
+    text: str,
+    draft_count: int,
+    edited: bool,
+) -> None:
+    await conn.execute(
+        """
+        INSERT INTO tweets (tweet_id, tweeted_at, local_date, capture_ids,
+                            theme, stitch, text, draft_count, edited)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (tweet_id, tweeted_at, local_date, json.dumps(capture_ids),
+         theme, stitch, text, draft_count, 1 if edited else 0),
+    )
+    await conn.commit()
+
+
+async def push_ledger_to_repo(*, settings: Settings, record: dict) -> None:
+    """Append `record` to `tweeted.json` at the captures repo root.
+    Failure is logged but not raised — SQLite ledger is canonical."""
+    try:
+        fetched = await fetch_file(settings=settings, path=_LEDGER_FILENAME)
+    except Exception:
+        log.exception("push_ledger_to_repo: fetch failed")
+        return
+    if fetched is None:
+        existing_arr: list = []
+        sha = None
+    else:
+        try:
+            existing_arr = json.loads(fetched[0]) or []
+            if not isinstance(existing_arr, list):
+                existing_arr = []
+        except json.JSONDecodeError:
+            log.warning("tweeted.json malformed, starting fresh")
+            existing_arr = []
+        sha = fetched[1]
+    existing_arr.append(record)
+    content = json.dumps(existing_arr, indent=2, ensure_ascii=False) + "\n"
+    try:
+        await put_file(
+            settings=settings,
+            path=_LEDGER_FILENAME,
+            content=content,
+            message=f"tweet {record.get('tweet_id', '')}",
+            existing_sha=sha,
+        )
+    except Exception:
+        log.exception("push_ledger_to_repo: put failed")
