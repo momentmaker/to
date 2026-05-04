@@ -145,3 +145,39 @@ async def test_tweetable_no_arg_shows_usage():
         await handlers.tweetable_handler(update, ctx)
         update.message.reply_text.assert_awaited()
         assert "usage" in update.message.reply_text.call_args.args[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_tweetable_preserves_github_sha(monkeypatch):
+    """Regression: setting tweetable must NOT clear github_sha. Doing so
+    forces the next push to be treated as a create, which GitHub rejects
+    with 422 because the file already exists.
+    """
+    settings = fake_settings(
+        TELEGRAM_OWNER_ID=1, GITHUB_TOKEN="t", GITHUB_REPO="x/y",
+    )
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        await _add_capture(conn)  # github_sha='abc123'
+
+        captured: dict = {}
+
+        async def fake_push(capture_id, *, settings, conn, client=None):
+            async with conn.execute(
+                "SELECT github_sha FROM captures WHERE id = ?", (capture_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            captured["sha_at_push"] = row[0]
+            return True
+
+        monkeypatch.setattr(
+            "bot.handlers.github_sync.push_capture", fake_push,
+        )
+
+        await handlers.tweetable_handler(
+            _update("/tweetable last"),
+            _ctx(conn=conn, settings=settings),
+        )
+        # The sha row must still hold its prior value when push_capture runs.
+        assert captured["sha_at_push"] == "abc123"

@@ -23,6 +23,7 @@ from bot.llm.base import Message
 from bot.llm.router import Providers, call_llm
 from bot.persona import VOICE_ORCHURATOR
 from bot.prompts import SYSTEM_TWEET_STITCH
+from bot.tweet_validate import validate_stitch, validate_tweet_total_length
 
 log = logging.getLogger(__name__)
 
@@ -576,8 +577,6 @@ async def try_build_draft(
     source capture body by construction. The verbatim invariant is
     enforced structurally, not at validation time.
     """
-    from bot.tweet_validate import validate_stitch, validate_tweet_total_length
-
     summaries = [(c["local_date"], (c["raw"] or "").strip()) for c in captures]
     cap_dicts = [dict(c) for c in captures]
 

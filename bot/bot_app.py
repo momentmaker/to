@@ -71,17 +71,21 @@ def _validate(settings: Settings) -> None:
             )
 
 
-async def create_bot_app(settings: Settings):
-    _validate(settings)
-
-    # Boot-time guard: TWEET_DAILY_V2_ENABLED requires X OAuth. Without
-    # all four creds we cannot post; never generate drafts that can't ship.
+def _gate_tweet_v2_on_oauth(settings: Settings) -> None:
+    """Boot-time guard: TWEET_DAILY_V2_ENABLED requires X OAuth. Without
+    all four creds we cannot post; never generate drafts that can't ship.
+    Mutates settings in place when the gate trips."""
     if settings.TWEET_DAILY_V2_ENABLED and not tweet_mod.is_oauth_configured(settings):
         log.warning(
             "tweet_v2: TWEET_DAILY_V2_ENABLED=true but X OAuth not "
             "configured; disabling auto-fire."
         )
         settings.TWEET_DAILY_V2_ENABLED = False
+
+
+async def create_bot_app(settings: Settings):
+    _validate(settings)
+    _gate_tweet_v2_on_oauth(settings)
 
     app = (
         ApplicationBuilder()
