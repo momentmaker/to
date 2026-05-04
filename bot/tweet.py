@@ -194,9 +194,19 @@ class TweetResult:
     url: str
 
 
-async def post_tweet(text: str, *, settings: Settings) -> TweetResult | None:
+async def post_tweet(
+    text: str,
+    *,
+    settings: Settings,
+    in_reply_to_tweet_id: str | None = None,
+) -> TweetResult | None:
     """Post `text` to X. Returns TweetResult on success, None on failure or
     when OAuth isn't configured.
+
+    When `in_reply_to_tweet_id` is set, posts as a reply to that tweet —
+    used by the daily-tweet pipeline to thread together posts that
+    rhyme on a recurring theme. Twitter strips the @<self> prefix on
+    self-replies, so the result reads as a clean threaded follow-up.
     """
     if not _oauth_configured(settings):
         log.debug("tweet: OAuth not configured, skipping post")
@@ -217,7 +227,10 @@ async def post_tweet(text: str, *, settings: Settings) -> TweetResult | None:
         wait_on_rate_limit=False,
     )
     try:
-        response = await client.create_tweet(text=trimmed)
+        kwargs: dict = {"text": trimmed}
+        if in_reply_to_tweet_id:
+            kwargs["in_reply_to_tweet_id"] = in_reply_to_tweet_id
+        response = await client.create_tweet(**kwargs)
     except Exception:
         log.exception("tweet: create_tweet failed")
         return None

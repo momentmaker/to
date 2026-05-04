@@ -303,6 +303,10 @@ class PendingDraft(NamedTuple):
     char_count: int
     local_date: str
     created_at: str
+    # tweet_id of a prior tweet on the same theme. When set, /post sends
+    # this draft as a reply to that tweet, building a visible thread of
+    # recurring thoughts on Twitter. Optional / nullable.
+    chain_target: str | None = None
 
 
 def _utcnow_iso() -> str:
@@ -315,6 +319,7 @@ def _utcnow_iso() -> str:
 def _decode_pending(value: str) -> PendingDraft | None:
     try:
         d = json.loads(value)
+        chain_target = d.get("chain_target")
         return PendingDraft(
             draft_text=str(d["draft_text"]),
             capture_ids=[int(x) for x in d["capture_ids"]],
@@ -324,6 +329,7 @@ def _decode_pending(value: str) -> PendingDraft | None:
             char_count=int(d.get("char_count") or 0),
             local_date=str(d["local_date"]),
             created_at=str(d.get("created_at") or ""),
+            chain_target=str(chain_target) if chain_target else None,
         )
     except (json.JSONDecodeError, KeyError, ValueError, TypeError):
         return None
@@ -338,6 +344,7 @@ async def set_pending(
     stitch: str,
     char_count: int,
     local_date: str,
+    chain_target: str | None = None,
 ) -> None:
     payload = {
         "draft_text": draft_text,
@@ -348,6 +355,7 @@ async def set_pending(
         "char_count": char_count,
         "local_date": local_date,
         "created_at": _utcnow_iso(),
+        "chain_target": chain_target,
     }
     now = _utcnow_iso()
     await conn.execute(
@@ -383,6 +391,7 @@ async def update_for_next(
     theme: str,
     stitch: str,
     char_count: int,
+    chain_target: str | None = None,
 ) -> int | None:
     """Atomic UPDATE of an existing pending row. Returns the new
     draft_count, or None if no row exists. Preserves local_date and
@@ -400,6 +409,7 @@ async def update_for_next(
         "char_count": char_count,
         "local_date": cur.local_date,
         "created_at": cur.created_at,
+        "chain_target": chain_target,
     }
     async with conn.execute(
         """
@@ -536,12 +546,35 @@ def format_pool_for_themes(pool: list[aiosqlite.Row]) -> str:
     return "\n".join(lines)
 
 
+async def find_chain_target(
+    conn: aiosqlite.Connection, *, theme: str,
+) -> str | None:
+    """Return the most recent prior tweet's id with the same theme, or
+    None if no prior tweet shares it. Used to thread today's draft as
+    a self-reply, building visible recurring-thought chains on Twitter.
+    """
+    if not theme:
+        return None
+    async with conn.execute(
+        "SELECT tweet_id FROM tweets WHERE theme = ? "
+        "ORDER BY tweeted_at DESC LIMIT 1",
+        (theme,),
+    ) as cur:
+        row = await cur.fetchone()
+    return str(row[0]) if row else None
+
+
 def render_draft_dm(
     *, draft_text: str, theme: str, char_count: int,
-    draft_count: int, cap: int,
+    draft_count: int, cap: int, chain_target: str | None = None,
 ) -> str:
+    chain_line = ""
+    if chain_target:
+        chain_line = (
+            f" · 🧵 reply to https://x.com/i/web/status/{chain_target}"
+        )
     return (
-        f"draft {draft_count}/{cap}\n\n"
+        f"draft {draft_count}/{cap}{chain_line}\n\n"
         f"{draft_text}\n\n"
         f"{char_count}/280 chars · theme: {theme}\n\n"
         f"/post   /next   /edit <text>   /skip"
@@ -749,6 +782,7 @@ async def daily_tweet_draft_job(
         )
         if draft is None:
             continue
+        chain_target = await find_chain_target(conn, theme=proposal.theme)
         await set_pending(
             conn,
             draft_text=draft["text"],
@@ -757,6 +791,7 @@ async def daily_tweet_draft_job(
             stitch=draft["stitch"],
             char_count=draft["char_count"],
             local_date=today_iso,
+            chain_target=chain_target,
         )
         try:
             await bot.send_message(
@@ -765,6 +800,7 @@ async def daily_tweet_draft_job(
                     draft_text=draft["text"], theme=proposal.theme,
                     char_count=draft["char_count"], draft_count=1,
                     cap=settings.TWEET_NEXT_CAP,
+                    chain_target=chain_target,
                 ),
             )
         except Exception:

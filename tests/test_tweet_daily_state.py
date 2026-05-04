@@ -134,3 +134,90 @@ async def test_expire_keeps_today():
         )
         assert dropped is False
         assert await tweet_daily.get_pending(conn) is not None
+
+
+@pytest.mark.asyncio
+async def test_find_chain_target_returns_none_when_no_prior_tweet():
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        result = await tweet_daily.find_chain_target(conn, theme="privacy")
+        assert result is None
+
+
+@pytest.mark.asyncio
+async def test_find_chain_target_returns_most_recent_same_theme():
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        await conn.execute(
+            """
+            INSERT INTO tweets (tweet_id, tweeted_at, local_date,
+                                capture_ids, theme, text, draft_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("old", "2026-04-01T01:00:00Z", "2026-04-01", "[]",
+             "privacy", "old tweet", 1),
+        )
+        await conn.execute(
+            """
+            INSERT INTO tweets (tweet_id, tweeted_at, local_date,
+                                capture_ids, theme, text, draft_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("recent", "2026-05-01T01:00:00Z", "2026-05-01", "[]",
+             "privacy", "newer tweet", 1),
+        )
+        await conn.execute(
+            """
+            INSERT INTO tweets (tweet_id, tweeted_at, local_date,
+                                capture_ids, theme, text, draft_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("other", "2026-05-02T01:00:00Z", "2026-05-02", "[]",
+             "craft", "different theme", 1),
+        )
+        await conn.commit()
+        result = await tweet_daily.find_chain_target(conn, theme="privacy")
+        assert result == "recent"
+
+
+@pytest.mark.asyncio
+async def test_find_chain_target_returns_none_for_empty_theme():
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        result = await tweet_daily.find_chain_target(conn, theme="")
+        assert result is None
+
+
+@pytest.mark.asyncio
+async def test_pending_round_trips_chain_target():
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        await tweet_daily.set_pending(
+            conn,
+            draft_text="hi", capture_ids=[1, 2],
+            theme="t", stitch="s", char_count=10,
+            local_date="2026-05-03",
+            chain_target="prior_tweet_id_123",
+        )
+        p = await tweet_daily.get_pending(conn)
+        assert p is not None
+        assert p.chain_target == "prior_tweet_id_123"
+
+
+@pytest.mark.asyncio
+async def test_pending_chain_target_is_none_when_unset():
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        await tweet_daily.set_pending(
+            conn,
+            draft_text="hi", capture_ids=[1, 2],
+            theme="t", stitch="s", char_count=10,
+            local_date="2026-05-03",
+        )
+        p = await tweet_daily.get_pending(conn)
+        assert p.chain_target is None

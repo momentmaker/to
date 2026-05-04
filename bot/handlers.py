@@ -1210,7 +1210,10 @@ async def post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("no draft pending.")
         return
 
-    result = await tweet_mod.post_tweet(consumed.draft_text, settings=settings)
+    result = await tweet_mod.post_tweet(
+        consumed.draft_text, settings=settings,
+        in_reply_to_tweet_id=consumed.chain_target,
+    )
     if result is None:
         await update.message.reply_text(
             "post failed (OAuth or X error). draft cleared — re-fire with /next tomorrow."
@@ -1313,6 +1316,9 @@ async def next_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         if draft is None:
             continue
+        chain_target = await tweet_daily.find_chain_target(
+            conn, theme=proposal.theme,
+        )
         new_count = await tweet_daily.update_for_next(
             conn,
             draft_text=draft["text"],
@@ -1320,6 +1326,7 @@ async def next_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             theme=proposal.theme,
             stitch=draft["stitch"],
             char_count=draft["char_count"],
+            chain_target=chain_target,
         )
         await update.message.reply_text(
             tweet_daily.render_draft_dm(
@@ -1327,6 +1334,7 @@ async def next_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 char_count=draft["char_count"],
                 draft_count=new_count or pending.draft_count + 1,
                 cap=settings.TWEET_NEXT_CAP,
+                chain_target=chain_target,
             )
         )
         return
@@ -1367,7 +1375,10 @@ async def edit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("no draft pending.")
         return
 
-    result = await tweet_mod.post_tweet(user_text, settings=settings)
+    result = await tweet_mod.post_tweet(
+        user_text, settings=settings,
+        in_reply_to_tweet_id=consumed.chain_target,
+    )
     if result is None:
         await update.message.reply_text("post failed.")
         return
