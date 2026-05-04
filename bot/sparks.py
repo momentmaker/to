@@ -167,3 +167,70 @@ def append_spark(path: Path, *, date: str, line: str) -> None:
         body = normalized + "\n\n" + new_entry + "\n"
 
     path.write_text(body, encoding="utf-8")
+
+
+_SPARKS_FILENAME = "sparks.md"
+
+
+def _normalize_in_memory(existing: str, *, date: str, line: str) -> str:
+    """In-memory equivalent of `append_spark` for cloud-driven write
+    via the GitHub contents API. Returns the existing string unchanged
+    when the entry would be a duplicate of the last line."""
+    new_entry = f"{date} — {line.strip()}"
+    if existing:
+        for prev in reversed(existing.splitlines()):
+            if prev.strip():
+                if prev == new_entry:
+                    return existing
+                break
+    if not existing:
+        return _HEADER + "\n" + new_entry + "\n"
+    normalized = existing.rstrip("\n")
+    return normalized + "\n\n" + new_entry + "\n"
+
+
+async def daily_sparks_job(
+    *,
+    conn: aiosqlite.Connection,
+    settings: Settings,
+    providers: Providers,
+    yesterday: str,
+) -> bool:
+    """Run once per day at SPARKS_LOCAL_TIME. Returns True iff a spark
+    was selected and pushed. Silent on no-spark days."""
+    from bot.github_sync import (
+        fetch_file,
+        is_configured as github_configured,
+        put_file,
+    )
+
+    if not settings.SPARKS_ENABLED:
+        return False
+    if not github_configured(settings):
+        log.info("daily_sparks_job: github not configured, skipping")
+        return False
+
+    line = await select_spark(
+        conn, local_date=yesterday,
+        settings=settings, providers=providers,
+    )
+    if not line:
+        log.info("daily_sparks_job: no spark for %s", yesterday)
+        return False
+
+    fetched = await fetch_file(settings=settings, path=_SPARKS_FILENAME)
+    existing, sha = ("", None) if fetched is None else fetched
+    new_content = _normalize_in_memory(existing, date=yesterday, line=line)
+    if new_content == existing:
+        log.info("daily_sparks_job: idempotent no-op for %s", yesterday)
+        return False
+
+    await put_file(
+        settings=settings,
+        path=_SPARKS_FILENAME,
+        content=new_content,
+        message=f"spark {yesterday}",
+        existing_sha=sha,
+    )
+    log.info("daily_sparks_job: appended spark for %s", yesterday)
+    return True
