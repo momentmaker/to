@@ -115,46 +115,16 @@ If yesterday has zero captures, exit 0 without writing.
 
 ## Step 4 — Pick the spark
 
-From yesterday's captures, pick ONE line — the sharpest, most self-contained,
-most re-readable sentence. Rules:
+**DEPRECATED — superseded by `bot/sparks.py:daily_sparks_job`.**
 
-- Must be a verbatim substring of one of the capture bodies. No paraphrasing.
-  No invention. Trimming leading/trailing words is fine.
-- 8–200 characters. Not a URL. Not a title.
-- Prefer the user's own words (reflection, why, text capture) over scraped
-  article text when both are available.
-- If nothing meets the bar, SKIP this step (no line appended).
+The bot's APScheduler now picks and writes the daily spark
+deterministically at `SPARKS_LOCAL_TIME` (default 06:00 local). The
+selection runs against SQLite captures with the same criteria the
+Routine used (verbatim substring, 8–200 chars, prefer user words).
+The write is plain Python — no shell append — so the blank-line
+spacing bug that broke this file in 2026-W17 cannot recur.
 
-Append one line to `sparks.md` at the repo root, format:
-
-```
-YYYY-MM-DD — <the line>
-```
-
-**Use Python for the write — do NOT append via shell echo/cat.** Naive
-append concatenates onto the previous line if the file doesn't already
-end in a newline, which it often doesn't on first write. This block is
-correct and idempotent:
-
-```bash
-python3 - <<'PY'
-from pathlib import Path
-p = Path("sparks.md")
-existing = p.read_text(encoding="utf-8") if p.exists() else "# sparks\n\n"
-# Markdown needs a BLANK line between entries — a single newline is a
-# soft-break and GitHub renders the two lines as one paragraph. Strip
-# any trailing newlines and re-add exactly two, then append the new
-# line with a single trailing newline (the NEXT day's append will add
-# its own blank line on top of that).
-normalized = existing.rstrip("\n") + "\n\n"
-new_line = "YYYY-MM-DD — <the line>\n"
-p.write_text(normalized + new_line, encoding="utf-8")
-PY
-```
-
-Substitute `YYYY-MM-DD` and `<the line>` with the actual values before
-running. Every spark line MUST occupy its own paragraph in the rendered
-file — a single `\n` between two non-empty lines is NOT enough.
+Skip this step entirely. Proceed directly to Step 5.
 
 ## Step 5 — Detect echoes
 
