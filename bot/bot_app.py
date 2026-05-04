@@ -2,17 +2,20 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
 
-from bot import db
+from bot import db, tweet as tweet_mod
 from bot.config import Settings
 from bot.handlers import (
     ask_handler,
     document_message_handler,
+    edit_handler,
     error_handler,
     export_handler,
     forget_handler,
     help_handler,
     highlight_handler,
+    next_handler,
     photo_message_handler,
+    post_handler,
     reflect_handler,
     setmark_handler,
     setvow_handler,
@@ -20,11 +23,17 @@ from bot.handlers import (
     start_handler,
     status_handler,
     text_message_handler,
+    tweetable_handler,
     tweetweekly_handler,
+    untweetable_handler,
     voice_message_handler,
 )
 from bot.llm.router import build_providers
 from bot.scheduler import build_scheduler, drain_on_boot
+
+import logging
+
+log = logging.getLogger(__name__)
 
 
 _VALID_PROVIDER_NAMES = {"anthropic", "openai"}
@@ -65,6 +74,15 @@ def _validate(settings: Settings) -> None:
 async def create_bot_app(settings: Settings):
     _validate(settings)
 
+    # Boot-time guard: TWEET_DAILY_V2_ENABLED requires X OAuth. Without
+    # all four creds we cannot post; never generate drafts that can't ship.
+    if settings.TWEET_DAILY_V2_ENABLED and not tweet_mod.is_oauth_configured(settings):
+        log.warning(
+            "tweet_v2: TWEET_DAILY_V2_ENABLED=true but X OAuth not "
+            "configured; disabling auto-fire."
+        )
+        settings.TWEET_DAILY_V2_ENABLED = False
+
     app = (
         ApplicationBuilder()
         .token(settings.TELEGRAM_BOT_TOKEN)
@@ -92,6 +110,11 @@ async def create_bot_app(settings: Settings):
     app.add_handler(CommandHandler("forget", forget_handler))
     app.add_handler(CommandHandler("highlight", highlight_handler))
     app.add_handler(CommandHandler("tweetweekly", tweetweekly_handler))
+    app.add_handler(CommandHandler("post", post_handler))
+    app.add_handler(CommandHandler("next", next_handler))
+    app.add_handler(CommandHandler("edit", edit_handler))
+    app.add_handler(CommandHandler("tweetable", tweetable_handler))
+    app.add_handler(CommandHandler("untweetable", untweetable_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, voice_message_handler))
     app.add_handler(MessageHandler(filters.PHOTO, photo_message_handler))
