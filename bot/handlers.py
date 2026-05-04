@@ -1192,3 +1192,89 @@ async def post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.exception("ledger push failed")
 
     await update.message.reply_text(f"posted: {result.url}")
+
+
+async def next_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _ensure_owner(update, context):
+        return
+    if update.message is None:
+        return
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+    providers: Providers | None = context.bot_data.get("providers")
+
+    pending = await tweet_daily.get_pending(conn)
+    if pending is None:
+        await update.message.reply_text("no draft pending.")
+        return
+    if pending.draft_count >= settings.TWEET_NEXT_CAP:
+        await update.message.reply_text(
+            f"pool exhausted ({pending.draft_count}/{settings.TWEET_NEXT_CAP}) — "
+            "/post current, /skip, or /edit <text>."
+        )
+        return
+    if providers is None:
+        await update.message.reply_text("LLM provider not configured.")
+        return
+
+    today_iso = pending.local_date
+    pool = await tweet_daily.pick_eligible_pool(
+        conn, settings=settings, today_iso=today_iso,
+    )
+    if len(pool) < 2:
+        await update.message.reply_text(
+            "couldn't generate — pool too small. /post current, /skip, or /edit."
+        )
+        return
+
+    proposals = await tweet_daily.detect_themes(
+        pool_summary=tweet_daily._format_pool_for_themes(pool),
+        settings=settings, providers=providers, conn=conn,
+    )
+    if not proposals:
+        await update.message.reply_text(
+            "couldn't generate a draft — try /next again or /skip."
+        )
+        return
+
+    used = set(pending.capture_ids)
+    fresh = [p for p in proposals if not (set(p.capture_ids) & used)]
+    proposals = fresh or proposals  # fall back to overlap if exhausted
+
+    chosen = await tweet_daily.pick_theme(proposals, conn=conn)
+    candidates = [chosen] + [p for p in proposals if p is not chosen]
+    pool_by_id = {r["id"]: r for r in pool}
+
+    for proposal in candidates:
+        captures = [
+            pool_by_id[i] for i in proposal.capture_ids if i in pool_by_id
+        ][:2]
+        if len(captures) < 2:
+            continue
+        draft = await tweet_daily._try_build_draft(
+            captures=captures, theme=proposal.theme,
+            settings=settings, providers=providers, conn=conn,
+        )
+        if draft is None:
+            continue
+        new_count = await tweet_daily.update_for_next(
+            conn,
+            draft_text=draft["text"],
+            capture_ids=[c["id"] for c in captures],
+            theme=proposal.theme,
+            stitch=draft["stitch"],
+            char_count=draft["char_count"],
+        )
+        await update.message.reply_text(
+            tweet_daily._render_draft_dm(
+                draft_text=draft["text"], theme=proposal.theme,
+                char_count=draft["char_count"],
+                draft_count=new_count or pending.draft_count + 1,
+                cap=settings.TWEET_NEXT_CAP,
+            )
+        )
+        return
+
+    await update.message.reply_text(
+        "couldn't generate a draft — try /next again or /skip."
+    )
