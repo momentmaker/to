@@ -35,6 +35,13 @@ def validate_stitch(text: str) -> tuple[bool, str | None]:
     if not s:
         return False, "empty stitch"
 
+    # Internal line breaks would split the rendered tweet's first line and
+    # eat into the char budget unpredictably. Reject any CR/LF or unicode
+    # line/paragraph separators in the stitch body.
+    for ch in ("\n", "\r", "\u2028", "\u2029"):
+        if ch in s:
+            return False, "line break in stitch"
+
     if "?" in s:
         return False, "punctuation: '?' not allowed"
     if "!" in s:

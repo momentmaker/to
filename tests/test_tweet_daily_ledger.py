@@ -137,3 +137,36 @@ async def test_push_ledger_swallows_put_failure(monkeypatch):
     await tweet_daily.push_ledger_to_repo(
         settings=settings, record={"tweet_id": "x"},
     )
+
+
+@pytest.mark.asyncio
+async def test_record_tweet_is_idempotent_on_duplicate_id():
+    """Duplicate tweet_id (e.g. from X retry returning prior id) must
+    not raise IntegrityError."""
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        await tweet_daily.record_tweet(
+            conn,
+            tweet_id="dup", tweeted_at="2026-05-03T01:00:00Z",
+            local_date="2026-05-03", capture_ids=[1, 2],
+            theme="t", stitch="s", text="first",
+            draft_count=1, edited=False,
+        )
+        # Second insert with same tweet_id — should not raise.
+        await tweet_daily.record_tweet(
+            conn,
+            tweet_id="dup", tweeted_at="2026-05-03T01:00:01Z",
+            local_date="2026-05-03", capture_ids=[3, 4],
+            theme="other", stitch="other", text="second",
+            draft_count=2, edited=True,
+        )
+        async with conn.execute(
+            "SELECT text, theme, edited FROM tweets WHERE tweet_id = ?",
+            ("dup",),
+        ) as cur:
+            row = await cur.fetchone()
+        # First insert wins; second is dropped.
+        assert row["text"] == "first"
+        assert row["theme"] == "t"
+        assert row["edited"] == 0
