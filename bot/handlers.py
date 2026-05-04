@@ -1531,13 +1531,10 @@ async def draft_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today_iso = local_date_for(
         datetime.now(timezone.utc), settings.TIMEZONE,
     ).isoformat()
-    ok = await tweet_daily.daily_tweet_draft_job(
+    reason = await tweet_daily.daily_tweet_draft_job(
         conn=conn, settings=settings,
         providers=providers, bot=context.bot,
         today_iso=today_iso, force=True,
     )
-    if not ok:
-        await update.message.reply_text(
-            "couldn't draft. check: captures /tweetable'd (pool ≥ 2), "
-            "themes detectable, X OAuth set if you intend to /post."
-        )
+    if reason is not None:
+        await update.message.reply_text(f"couldn't draft — {reason}.")

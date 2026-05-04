@@ -57,12 +57,12 @@ async def test_daily_tweet_draft_job_full_flow(monkeypatch):
 
         monkeypatch.setattr("bot.tweet_daily.call_llm", fake_call)
 
-        ok = await tweet_daily.daily_tweet_draft_job(
+        reason = await tweet_daily.daily_tweet_draft_job(
             conn=conn, settings=settings,
             providers=FakeProviders(), bot=bot,
             today_iso="2026-05-03",
         )
-        assert ok is True
+        assert reason is None
         assert len(bot.sent) == 1
         assert bot.sent[0]["chat_id"] == 123
         assert "you caught it." in bot.sent[0]["text"]
@@ -79,12 +79,12 @@ async def test_daily_tweet_draft_job_disabled_when_flag_false():
     async with aiosqlite.connect(":memory:") as conn:
         conn.row_factory = aiosqlite.Row
         await init_schema(conn)
-        ok = await tweet_daily.daily_tweet_draft_job(
+        reason = await tweet_daily.daily_tweet_draft_job(
             conn=conn, settings=settings,
             providers=FakeProviders(), bot=bot,
             today_iso="2026-05-03",
         )
-        assert ok is False
+        assert reason is not None
         assert bot.sent == []
 
 
@@ -97,12 +97,12 @@ async def test_daily_tweet_draft_job_skips_when_pool_too_small():
         await init_schema(conn)
         # Only one tweetable capture
         await _add_capture(conn, raw="lonely", payload={"tweetable": True})
-        ok = await tweet_daily.daily_tweet_draft_job(
+        reason = await tweet_daily.daily_tweet_draft_job(
             conn=conn, settings=settings,
             providers=FakeProviders(), bot=bot,
             today_iso="2026-05-03",
         )
-        assert ok is False
+        assert reason is not None
         assert bot.sent == []
 
 
@@ -126,12 +126,12 @@ async def test_daily_tweet_draft_job_skips_when_pending_already_set(monkeypatch)
 
         monkeypatch.setattr("bot.tweet_daily.call_llm", boom)
 
-        ok = await tweet_daily.daily_tweet_draft_job(
+        reason = await tweet_daily.daily_tweet_draft_job(
             conn=conn, settings=settings,
             providers=FakeProviders(), bot=bot,
             today_iso="2026-05-03",
         )
-        assert ok is False
+        assert reason is not None
         # Existing pending preserved
         p = await tweet_daily.get_pending(conn)
         assert p.draft_text == "existing"

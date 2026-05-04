@@ -63,13 +63,16 @@ def _coerce_json(raw: str) -> Any:
 
 _THEME_DETECTION_PROMPT = """\
 You read a pool of recent commonplace-book captures and propose
-themes that connect 2-3 of them. Return between 0 and 5 proposals.
-A "theme" is a short kebab-case label (privacy-asymmetry,
-automation-as-craft). Each proposal lists exactly 2-3 capture ids
-that share that theme.
+themes that connect 2-3 of them. A "theme" is a short kebab-case
+label (privacy-asymmetry, automation-as-craft, tokens-and-art).
+Each proposal lists exactly 2-3 capture ids that share that theme.
 
-Skip thin connections. Better to return [] than to pad with weak
-rhymes.
+Be generous about what counts as a theme. Even loose conceptual
+rhymes — a shared mood, a recurring noun, a parallel observation —
+qualify. Return between 1 and 5 proposals whenever the pool has
+2 or more captures; return [] only when no two captures share
+ANY plausible thread (genuinely unrelated topics on different
+days).
 
 Reply with JSON only — an array, no prose:
 
@@ -622,28 +625,29 @@ async def daily_tweet_draft_job(
     bot,
     today_iso: str | None = None,
     force: bool = False,
-) -> bool:
-    """Cron-driven entry. Returns True iff a draft was generated and DMed.
+) -> str | None:
+    """Cron-driven entry. Returns None iff a draft was generated and DMed.
+    Otherwise returns a short failure reason for the caller to surface.
 
     Pass force=True to bypass the TWEET_DAILY_V2_ENABLED master switch
     (matches the /reflect and /export pattern for explicit user requests).
     """
     if not force and not settings.TWEET_DAILY_V2_ENABLED:
-        return False
+        return "pipeline disabled (TWEET_DAILY_V2_ENABLED=false)"
     if settings.TELEGRAM_OWNER_ID == 0 or bot is None:
-        return False
+        return "no Telegram owner / bot configured"
 
     today_iso = today_iso or date.today().isoformat()
 
     await expire_if_stale(conn, today_local=today_iso)
     if not force and await get_pending(conn) is not None:
         log.info("daily_tweet_draft_job: pending draft already present, skipping")
-        return False
+        return "draft already pending"
 
     pool = await pick_eligible_pool(conn, settings=settings, today_iso=today_iso)
     if len(pool) < 2:
         log.info("daily_tweet_draft_job: pool < 2, no draft")
-        return False
+        return f"pool too small ({len(pool)}) — flag more captures with /tweetable"
 
     proposals = await detect_themes(
         pool_summary=format_pool_for_themes(pool),
@@ -651,7 +655,7 @@ async def daily_tweet_draft_job(
     )
     if not proposals:
         log.info("daily_tweet_draft_job: no theme proposals")
-        return False
+        return "no theme proposals — captures may be too dissimilar"
 
     chosen = await pick_theme(proposals, conn=conn)
     candidates = [chosen] + [p for p in proposals if p is not chosen]
@@ -690,8 +694,8 @@ async def daily_tweet_draft_job(
         except Exception:
             log.exception("daily_tweet_draft_job: bot.send_message failed")
             await clear_pending(conn)
-            return False
-        return True
+            return "Telegram send failed"
+        return None
 
     log.info("daily_tweet_draft_job: no proposal produced a valid draft")
-    return False
+    return "stitch validators rejected all candidates (3 retries each)"
