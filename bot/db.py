@@ -141,12 +141,18 @@ CREATE INDEX IF NOT EXISTS tweets_local_date_idx ON tweets(local_date);
 """
 
 
+_MIGRATION_V4 = """
+ALTER TABLE tweets ADD COLUMN in_reply_to_tweet_id TEXT;
+"""
+
+
 # Ordered list of migrations. MIGRATIONS[i] upgrades schema from v(i) to v(i+1).
 # v0 = empty DB. Never modify a migration once shipped; append new ones.
 MIGRATIONS: list[str] = [
     _MIGRATION_V1,
     _MIGRATION_V2,
     _MIGRATION_V3,
+    _MIGRATION_V4,
 ]
 
 

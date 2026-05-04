@@ -536,3 +536,120 @@ async def test_post_handler_no_chain_target_passes_none(monkeypatch):
         await handlers.post_handler(update, ctx)
 
         assert captured["in_reply_to"] is None
+
+
+@pytest.mark.asyncio
+async def test_edit_handler_passes_chain_target(monkeypatch):
+    """`/edit <text>` posts user-verbatim text but must still respect the
+    chain target so the edit threads under the prior tweet on the same
+    theme. The edit changes WHAT was said, not WHERE in the chain."""
+    settings = fake_settings(TELEGRAM_OWNER_ID=1)
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        await tweet_daily.set_pending(
+            conn,
+            draft_text="orig", capture_ids=[1, 2],
+            theme="t", stitch="s", char_count=10,
+            local_date="2026-05-03",
+            chain_target="prior_id_xyz",
+        )
+
+        captured: dict = {}
+
+        async def fake_post_tweet(text, *, settings, in_reply_to_tweet_id=None):
+            captured["in_reply_to"] = in_reply_to_tweet_id
+            captured["text"] = text
+            from bot.tweet import TweetResult
+            return TweetResult(id="2", url="https://x.com/i/web/status/2")
+
+        monkeypatch.setattr(
+            "bot.handlers.tweet_mod.post_tweet", fake_post_tweet,
+        )
+
+        async def no_push(**_):
+            pass
+        monkeypatch.setattr(
+            "bot.handlers.tweet_daily.push_ledger_to_repo", no_push,
+        )
+
+        update = _update("/edit my own version")
+        ctx = _ctx(conn=conn, settings=settings)
+        await handlers.edit_handler(update, ctx)
+
+        assert captured["in_reply_to"] == "prior_id_xyz"
+        assert captured["text"] == "my own version"
+        # Ledger row preserved the chain.
+        async with conn.execute(
+            "SELECT in_reply_to_tweet_id FROM tweets"
+        ) as cur:
+            row = await cur.fetchone()
+        assert row["in_reply_to_tweet_id"] == "prior_id_xyz"
+
+
+@pytest.mark.asyncio
+async def test_next_handler_refreshes_chain_target_on_theme_change(monkeypatch):
+    """When /next regenerates with a different theme, chain_target must
+    be re-resolved (not stuck on the previous theme's prior tweet)."""
+    settings = fake_settings(TELEGRAM_OWNER_ID=1, TWEET_NEXT_CAP=5)
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        # Seed eligible captures.
+        for raw in ["alpha line worth keeping",
+                    "beta line worth keeping"]:
+            await conn.execute(
+                """
+                INSERT INTO captures (kind, raw, payload, created_at,
+                                      local_date, iso_week_key,
+                                      fz_week_idx, status)
+                VALUES ('text', ?, ?, ?, ?, ?, ?, 'processed')
+                """,
+                (raw, json.dumps({"tweetable": True}),
+                 "2026-05-01T12:00:00Z", "2026-05-01",
+                 "2026-W18", 1900),
+            )
+        # Pending references nonexistent captures so /next picks fresh.
+        await tweet_daily.set_pending(
+            conn, draft_text="d1", capture_ids=[99, 100],
+            theme="old-theme", stitch="s", char_count=10,
+            local_date="2026-05-03",
+            chain_target="stale_chain_target",
+        )
+        # Seed a prior tweet on the NEW theme so /next should chain to it.
+        await conn.execute(
+            """
+            INSERT INTO tweets (tweet_id, tweeted_at, local_date,
+                                capture_ids, theme, text, draft_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("new_chain", "2026-04-01T01:00:00Z", "2026-04-01", "[]",
+             "new-theme", "x", 1),
+        )
+        await conn.commit()
+
+        async def fake_call(*, purpose, **kwargs):
+            class R:
+                pass
+            r = R()
+            if purpose == "ingest":
+                r.text = json.dumps([
+                    {"theme": "new-theme", "capture_ids": [1, 2],
+                     "rationale": ""}
+                ])
+            else:
+                r.text = json.dumps({
+                    "shape": "insight",
+                    "stitch": "you noticed twice.",
+                })
+            return r
+
+        monkeypatch.setattr("bot.tweet_daily.call_llm", fake_call)
+
+        update = _update("/next")
+        ctx = _ctx(conn=conn, settings=settings)
+        await handlers.next_handler(update, ctx)
+
+        p = await tweet_daily.get_pending(conn)
+        assert p.theme == "new-theme"
+        assert p.chain_target == "new_chain"

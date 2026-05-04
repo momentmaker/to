@@ -1232,6 +1232,7 @@ async def post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=consumed.draft_text,
         draft_count=consumed.draft_count,
         edited=False,
+        in_reply_to_tweet_id=consumed.chain_target,
     )
     try:
         await tweet_daily.push_ledger_to_repo(
@@ -1242,6 +1243,7 @@ async def post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "capture_ids": consumed.capture_ids,
                 "theme": consumed.theme, "stitch": consumed.stitch,
                 "text": consumed.draft_text, "edited": False,
+                "in_reply_to_tweet_id": consumed.chain_target,
             },
         )
     except Exception:
@@ -1394,6 +1396,7 @@ async def edit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=user_text,
         draft_count=consumed.draft_count,
         edited=True,
+        in_reply_to_tweet_id=consumed.chain_target,
     )
     try:
         await tweet_daily.push_ledger_to_repo(
@@ -1404,6 +1407,7 @@ async def edit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "capture_ids": consumed.capture_ids,
                 "theme": consumed.theme, "stitch": consumed.stitch,
                 "text": user_text, "edited": True,
+                "in_reply_to_tweet_id": consumed.chain_target,
             },
         )
     except Exception:
