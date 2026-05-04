@@ -1490,10 +1490,11 @@ async def draft_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("LLM provider not configured.")
         return
 
-    # Clear any pending draft so we re-fire fresh. The daily job's "already
-    # pending" guard would otherwise short-circuit immediately.
-    await tweet_daily.clear_pending(conn)
-
+    # NOTE: don't pre-clear the pending draft here. force=True tells the
+    # orchestrator to bypass the "already pending" guard; on success it
+    # calls set_pending which atomically replaces the row. On failure the
+    # prior draft is preserved — a failed /draft never destroys work the
+    # user already had in front of them.
     today_iso = local_date_for(
         datetime.now(timezone.utc), settings.TIMEZONE,
     ).isoformat()
