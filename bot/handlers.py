@@ -101,6 +101,24 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     config_line = f"dob: {settings.DOB}  |  tz: {settings.TIMEZONE}"
 
+    pending_tweet = await tweet_daily.get_pending(conn)
+    async with conn.execute("SELECT COUNT(*) FROM tweets") as cur:
+        ledger_row = await cur.fetchone()
+    ledger_count = int(ledger_row[0]) if ledger_row else 0
+
+    pipeline_lines = ["", "tweet pipeline:"]
+    pipeline_lines.append(
+        f"  enabled: {'yes' if settings.TWEET_DAILY_V2_ENABLED else 'no'}"
+    )
+    if pending_tweet is None:
+        pipeline_lines.append("  pending: none")
+    else:
+        pipeline_lines.append(
+            f"  pending: draft {pending_tweet.draft_count}/"
+            f"{settings.TWEET_NEXT_CAP} · theme={pending_tweet.theme}"
+        )
+    pipeline_lines.append(f"  ledger: {ledger_count}")
+
     lines = [
         f"corpus: {total}",
         f"this week ({w_key}, fz-week {w_idx}): {this_week}",
@@ -111,6 +129,7 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tweet_line,
         digest_line,
         config_line,
+        *pipeline_lines,
     ]
     await update.message.reply_text("\n".join(lines))
 
