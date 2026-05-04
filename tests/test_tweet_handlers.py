@@ -292,3 +292,20 @@ async def test_edit_handler_no_text_replies_usage():
         await handlers.edit_handler(update, ctx)
         update.message.reply_text.assert_awaited()
         assert "usage" in update.message.reply_text.call_args.args[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_skip_clears_pending_tweet_draft():
+    settings = fake_settings(TELEGRAM_OWNER_ID=1)
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        await tweet_daily.set_pending(
+            conn, draft_text="d", capture_ids=[1, 2],
+            theme="t", stitch="s", char_count=10,
+            local_date="2026-05-03",
+        )
+        update = _update("/skip")
+        ctx = _ctx(conn=conn, settings=settings)
+        await handlers.skip_handler(update, ctx)
+        assert await tweet_daily.get_pending(conn) is None

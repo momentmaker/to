@@ -417,7 +417,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def skip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel any pending 'why?' or daily reflection without storing."""
+    """Cancel any pending 'why?', daily reflection, or tweet draft."""
     if not await _ensure_owner(update, context):
         return
     if update.message is None:
@@ -425,6 +425,7 @@ async def skip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = context.bot_data["db"]
     await why.clear_pending(conn)
     await reflection.clear_pending(conn)
+    await tweet_daily.clear_pending(conn)
     await update.message.reply_text("skipped.")
 
 
