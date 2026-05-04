@@ -1472,3 +1472,38 @@ async def tweetable_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def untweetable_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _do_tweetable_command(update, context, value=False)
+
+
+async def draft_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Force-fire the daily tweet draft job now. Mirrors /reflect and /export
+    for explicit user requests. Bypasses TWEET_DAILY_V2_ENABLED so /draft is
+    useful for testing the pipeline before flipping the master switch.
+    """
+    if not await _ensure_owner(update, context):
+        return
+    if update.message is None:
+        return
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+    providers: Providers | None = context.bot_data.get("providers")
+    if providers is None:
+        await update.message.reply_text("LLM provider not configured.")
+        return
+
+    # Clear any pending draft so we re-fire fresh. The daily job's "already
+    # pending" guard would otherwise short-circuit immediately.
+    await tweet_daily.clear_pending(conn)
+
+    today_iso = local_date_for(
+        datetime.now(timezone.utc), settings.TIMEZONE,
+    ).isoformat()
+    ok = await tweet_daily.daily_tweet_draft_job(
+        conn=conn, settings=settings,
+        providers=providers, bot=context.bot,
+        today_iso=today_iso, force=True,
+    )
+    if not ok:
+        await update.message.reply_text(
+            "couldn't draft. check: captures /tweetable'd (pool ≥ 2), "
+            "themes detectable, X OAuth set if you intend to /post."
+        )

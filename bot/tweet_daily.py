@@ -621,9 +621,14 @@ async def daily_tweet_draft_job(
     providers: Providers,
     bot,
     today_iso: str | None = None,
+    force: bool = False,
 ) -> bool:
-    """Cron-driven entry. Returns True iff a draft was generated and DMed."""
-    if not settings.TWEET_DAILY_V2_ENABLED:
+    """Cron-driven entry. Returns True iff a draft was generated and DMed.
+
+    Pass force=True to bypass the TWEET_DAILY_V2_ENABLED master switch
+    (matches the /reflect and /export pattern for explicit user requests).
+    """
+    if not force and not settings.TWEET_DAILY_V2_ENABLED:
         return False
     if settings.TELEGRAM_OWNER_ID == 0 or bot is None:
         return False

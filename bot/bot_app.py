@@ -7,6 +7,7 @@ from bot.config import Settings
 from bot.handlers import (
     ask_handler,
     document_message_handler,
+    draft_handler,
     edit_handler,
     error_handler,
     export_handler,
@@ -114,6 +115,7 @@ async def create_bot_app(settings: Settings):
     app.add_handler(CommandHandler("forget", forget_handler))
     app.add_handler(CommandHandler("highlight", highlight_handler))
     app.add_handler(CommandHandler("tweetweekly", tweetweekly_handler))
+    app.add_handler(CommandHandler("draft", draft_handler))
     app.add_handler(CommandHandler("post", post_handler))
     app.add_handler(CommandHandler("next", next_handler))
     app.add_handler(CommandHandler("edit", edit_handler))
