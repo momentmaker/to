@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import aiosqlite
@@ -78,3 +80,41 @@ async def test_select_spark_skips_when_llm_pick_not_substring(monkeypatch):
             settings=settings, providers=FakeProviders(),
         )
         assert line is None
+
+
+def test_append_spark_to_empty_file(tmp_path):
+    p = tmp_path / "sparks.md"
+    sparks.append_spark(p, date="2026-05-03", line="hello world")
+    assert p.read_text() == "# sparks\n\n2026-05-03 — hello world\n"
+
+
+def test_append_spark_to_header_only(tmp_path):
+    p = tmp_path / "sparks.md"
+    p.write_text("# sparks\n\n")
+    sparks.append_spark(p, date="2026-05-03", line="hello world")
+    assert p.read_text() == "# sparks\n\n2026-05-03 — hello world\n"
+
+
+def test_append_spark_inserts_blank_line(tmp_path):
+    p = tmp_path / "sparks.md"
+    p.write_text("# sparks\n\n2026-05-02 — yesterday\n")
+    sparks.append_spark(p, date="2026-05-03", line="today")
+    assert p.read_text() == (
+        "# sparks\n\n2026-05-02 — yesterday\n\n2026-05-03 — today\n"
+    )
+
+
+def test_append_spark_strips_extra_trailing_newlines(tmp_path):
+    p = tmp_path / "sparks.md"
+    p.write_text("# sparks\n\n2026-05-02 — yesterday\n\n\n\n")
+    sparks.append_spark(p, date="2026-05-03", line="today")
+    assert p.read_text() == (
+        "# sparks\n\n2026-05-02 — yesterday\n\n2026-05-03 — today\n"
+    )
+
+
+def test_append_spark_idempotent_on_duplicate_last_entry(tmp_path):
+    p = tmp_path / "sparks.md"
+    p.write_text("# sparks\n\n2026-05-03 — already here\n")
+    sparks.append_spark(p, date="2026-05-03", line="already here")
+    assert p.read_text() == "# sparks\n\n2026-05-03 — already here\n"

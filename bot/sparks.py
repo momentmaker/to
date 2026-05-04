@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from pathlib import Path
 
 import aiosqlite
 
@@ -29,6 +30,7 @@ log = logging.getLogger(__name__)
 
 _MIN_LEN = 8
 _MAX_LEN = 200
+_HEADER = "# sparks\n"
 
 
 async def _load_candidates(
@@ -137,3 +139,31 @@ async def select_spark(
             continue
         return line
     return None
+
+
+def append_spark(path: Path, *, date: str, line: str) -> None:
+    """Append `<date> — <line>` to sparks.md preserving blank-line spacing.
+
+    Idempotent: re-appending the same `date — line` as the current last
+    entry is a no-op.
+    """
+    new_entry = f"{date} — {line.strip()}"
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+
+    if existing:
+        # Idempotent check: if the last non-blank line is exactly the new
+        # entry, do nothing.
+        for prev in reversed(existing.splitlines()):
+            if prev.strip():
+                if prev == new_entry:
+                    return
+                break
+
+    if not existing:
+        body = _HEADER + "\n" + new_entry + "\n"
+    else:
+        # Strip trailing newlines, ensure blank-line spacing.
+        normalized = existing.rstrip("\n")
+        body = normalized + "\n\n" + new_entry + "\n"
+
+    path.write_text(body, encoding="utf-8")
