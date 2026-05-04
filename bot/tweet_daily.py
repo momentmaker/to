@@ -636,7 +636,7 @@ async def daily_tweet_draft_job(
     today_iso = today_iso or date.today().isoformat()
 
     await expire_if_stale(conn, today_local=today_iso)
-    if await get_pending(conn) is not None:
+    if not force and await get_pending(conn) is not None:
         log.info("daily_tweet_draft_job: pending draft already present, skipping")
         return False
 

@@ -413,3 +413,44 @@ async def test_draft_handler_no_providers():
         await handlers.draft_handler(update, ctx)
         update.message.reply_text.assert_awaited()
         assert "LLM" in update.message.reply_text.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_draft_handler_preserves_pending_on_failure(monkeypatch):
+    """If /draft fails to produce a new draft (pool empty, no themes,
+    LLM failure), the user's prior pending draft must remain intact.
+    Regression: an earlier version cleared pending pre-emptively.
+    """
+    from datetime import datetime, timezone
+    from bot.week import local_date_for
+
+    settings = fake_settings(TELEGRAM_OWNER_ID=1)
+    today_iso = local_date_for(
+        datetime.now(timezone.utc), settings.TIMEZONE,
+    ).isoformat()
+
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        # Prior pending — local_date = today so expire_if_stale won't
+        # drop it for being from a prior day.
+        await tweet_daily.set_pending(
+            conn,
+            draft_text="prior", capture_ids=[42, 43],
+            theme="prior-theme", stitch="you saw it.",
+            char_count=11, local_date=today_iso,
+        )
+        # Pool is empty (no /tweetable captures), so the job will fail.
+
+        update = _update("/draft")
+        ctx = _ctx(conn=conn, settings=settings)
+        ctx.bot = MagicMock()
+        await handlers.draft_handler(update, ctx)
+
+        update.message.reply_text.assert_awaited()
+        assert "couldn't draft" in update.message.reply_text.call_args.args[0].lower()
+        # Critical: prior pending unchanged.
+        p = await tweet_daily.get_pending(conn)
+        assert p is not None
+        assert p.draft_text == "prior"
+        assert p.capture_ids == [42, 43]
