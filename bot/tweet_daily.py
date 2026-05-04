@@ -532,3 +532,161 @@ async def push_ledger_to_repo(*, settings: Settings, record: dict) -> None:
         )
     except Exception:
         log.exception("push_ledger_to_repo: put failed")
+
+
+def _format_pool_for_themes(pool: list[aiosqlite.Row]) -> str:
+    lines = []
+    for r in pool[:30]:
+        title = ""
+        try:
+            p = json.loads(r["processed"]) if r["processed"] else None
+            if isinstance(p, dict):
+                title = (p.get("title") or "").strip()
+        except (TypeError, json.JSONDecodeError):
+            pass
+        body = (r["raw"] or "")[:240].replace("\n", " ").strip()
+        prefix = f"[{r['id']}] ({r['kind']}) "
+        if title:
+            lines.append(prefix + f"{title}: {body}")
+        else:
+            lines.append(prefix + body)
+    return "\n".join(lines)
+
+
+def _render_draft_dm(
+    *, draft_text: str, theme: str, char_count: int,
+    draft_count: int, cap: int,
+) -> str:
+    return (
+        f"draft {draft_count}/{cap}\n\n"
+        f"{draft_text}\n\n"
+        f"{char_count}/280 chars · theme: {theme}\n\n"
+        f"/post   /next   /edit <text>   /skip"
+    )
+
+
+async def _try_build_draft(
+    *,
+    captures: list[aiosqlite.Row],
+    theme: str,
+    settings: Settings,
+    providers: Providers,
+    conn: aiosqlite.Connection,
+) -> dict | None:
+    """Up to 3 stitch attempts for this capture+theme combination.
+    Returns dict {text, stitch, char_count} or None on total failure.
+
+    Note: no separate quote-substring validator runs here. assemble_tweet
+    builds each quote by `_word_truncate(body, ...)` which is a pure
+    prefix operation, so the rendered quote is always a substring of its
+    source capture body by construction. The verbatim invariant is
+    enforced structurally, not at validation time.
+    """
+    from bot.tweet_validate import validate_stitch, validate_tweet_total_length
+
+    summaries = [(c["local_date"], (c["raw"] or "").strip()) for c in captures]
+    cap_dicts = [dict(c) for c in captures]
+
+    for _ in range(3):
+        stitch = await generate_stitch(
+            theme=theme, capture_summaries=summaries,
+            settings=settings, providers=providers, conn=conn,
+        )
+        if not stitch:
+            continue
+        ok, reason = validate_stitch(stitch)
+        if not ok:
+            log.info("stitch invalid: %s", reason)
+            continue
+        text = assemble_tweet(stitch=stitch, captures=cap_dicts)
+        if text is None:
+            continue
+        ok2, reason2 = validate_tweet_total_length(text)
+        if not ok2:
+            log.info("tweet length invalid: %s", reason2)
+            continue
+        measured = re.sub(r"https?://\S+", "x" * _TCO_LEN, text)
+        return {
+            "text": text,
+            "stitch": stitch,
+            "char_count": grapheme.length(measured),
+        }
+    return None
+
+
+async def daily_tweet_draft_job(
+    *,
+    conn: aiosqlite.Connection,
+    settings: Settings,
+    providers: Providers,
+    bot,
+    today_iso: str | None = None,
+) -> bool:
+    """Cron-driven entry. Returns True iff a draft was generated and DMed."""
+    if not settings.TWEET_DAILY_V2_ENABLED:
+        return False
+    if settings.TELEGRAM_OWNER_ID == 0 or bot is None:
+        return False
+
+    today_iso = today_iso or date.today().isoformat()
+
+    await expire_if_stale(conn, today_local=today_iso)
+    if await get_pending(conn) is not None:
+        log.info("daily_tweet_draft_job: pending draft already present, skipping")
+        return False
+
+    pool = await pick_eligible_pool(conn, settings=settings, today_iso=today_iso)
+    if len(pool) < 2:
+        log.info("daily_tweet_draft_job: pool < 2, no draft")
+        return False
+
+    proposals = await detect_themes(
+        pool_summary=_format_pool_for_themes(pool),
+        settings=settings, providers=providers, conn=conn,
+    )
+    if not proposals:
+        log.info("daily_tweet_draft_job: no theme proposals")
+        return False
+
+    chosen = await pick_theme(proposals, conn=conn)
+    candidates = [chosen] + [p for p in proposals if p is not chosen]
+    pool_by_id = {r["id"]: r for r in pool}
+
+    for proposal in candidates:
+        captures = [
+            pool_by_id[i] for i in proposal.capture_ids if i in pool_by_id
+        ][:2]
+        if len(captures) < 2:
+            continue
+        draft = await _try_build_draft(
+            captures=captures, theme=proposal.theme,
+            settings=settings, providers=providers, conn=conn,
+        )
+        if draft is None:
+            continue
+        await set_pending(
+            conn,
+            draft_text=draft["text"],
+            capture_ids=[c["id"] for c in captures],
+            theme=proposal.theme,
+            stitch=draft["stitch"],
+            char_count=draft["char_count"],
+            local_date=today_iso,
+        )
+        try:
+            await bot.send_message(
+                chat_id=settings.TELEGRAM_OWNER_ID,
+                text=_render_draft_dm(
+                    draft_text=draft["text"], theme=proposal.theme,
+                    char_count=draft["char_count"], draft_count=1,
+                    cap=settings.TWEET_NEXT_CAP,
+                ),
+            )
+        except Exception:
+            log.exception("daily_tweet_draft_job: bot.send_message failed")
+            await clear_pending(conn)
+            return False
+        return True
+
+    log.info("daily_tweet_draft_job: no proposal produced a valid draft")
+    return False
