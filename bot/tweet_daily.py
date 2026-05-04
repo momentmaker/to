@@ -308,3 +308,163 @@ def assemble_tweet(
     if grapheme.length(measured) > _TWEET_MAX:
         return None
     return out
+
+
+from datetime import datetime, timezone
+from typing import NamedTuple
+
+_KV_KEY = "pending_tweet_draft"
+
+
+class PendingDraft(NamedTuple):
+    draft_text: str
+    capture_ids: list[int]
+    theme: str
+    stitch: str
+    draft_count: int
+    char_count: int
+    local_date: str
+    created_at: str
+
+
+def _utcnow_iso() -> str:
+    return (
+        datetime.now(timezone.utc).isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _decode_pending(value: str) -> PendingDraft | None:
+    try:
+        d = json.loads(value)
+        return PendingDraft(
+            draft_text=str(d["draft_text"]),
+            capture_ids=[int(x) for x in d["capture_ids"]],
+            theme=str(d.get("theme") or ""),
+            stitch=str(d.get("stitch") or ""),
+            draft_count=int(d.get("draft_count") or 1),
+            char_count=int(d.get("char_count") or 0),
+            local_date=str(d["local_date"]),
+            created_at=str(d.get("created_at") or ""),
+        )
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return None
+
+
+async def set_pending(
+    conn: aiosqlite.Connection,
+    *,
+    draft_text: str,
+    capture_ids: list[int],
+    theme: str,
+    stitch: str,
+    char_count: int,
+    local_date: str,
+) -> None:
+    payload = {
+        "draft_text": draft_text,
+        "capture_ids": capture_ids,
+        "theme": theme,
+        "stitch": stitch,
+        "draft_count": 1,
+        "char_count": char_count,
+        "local_date": local_date,
+        "created_at": _utcnow_iso(),
+    }
+    now = _utcnow_iso()
+    await conn.execute(
+        """
+        INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE
+          SET value = excluded.value, updated_at = excluded.updated_at
+        """,
+        (_KV_KEY, json.dumps(payload), now),
+    )
+    await conn.commit()
+
+
+async def get_pending(conn: aiosqlite.Connection) -> PendingDraft | None:
+    async with conn.execute(
+        "SELECT value FROM kv WHERE key = ?", (_KV_KEY,),
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    pending = _decode_pending(row[0])
+    if pending is None:
+        log.warning("corrupt pending_tweet_draft row, clearing")
+        await clear_pending(conn)
+    return pending
+
+
+async def update_for_next(
+    conn: aiosqlite.Connection,
+    *,
+    draft_text: str,
+    capture_ids: list[int],
+    theme: str,
+    stitch: str,
+    char_count: int,
+) -> int | None:
+    """Atomic UPDATE of an existing pending row. Returns the new
+    draft_count, or None if no row exists. Preserves local_date and
+    created_at so midnight expiry still applies to the original day."""
+    cur = await get_pending(conn)
+    if cur is None:
+        return None
+    new_count = cur.draft_count + 1
+    payload = {
+        "draft_text": draft_text,
+        "capture_ids": capture_ids,
+        "theme": theme,
+        "stitch": stitch,
+        "draft_count": new_count,
+        "char_count": char_count,
+        "local_date": cur.local_date,
+        "created_at": cur.created_at,
+    }
+    async with conn.execute(
+        """
+        UPDATE kv SET value = ?, updated_at = ?
+        WHERE key = ?
+        RETURNING value
+        """,
+        (json.dumps(payload), _utcnow_iso(), _KV_KEY),
+    ) as c:
+        row = await c.fetchone()
+    await conn.commit()
+    return new_count if row is not None else None
+
+
+async def clear_pending(conn: aiosqlite.Connection) -> None:
+    await conn.execute("DELETE FROM kv WHERE key = ?", (_KV_KEY,))
+    await conn.commit()
+
+
+async def consume_for_post(conn: aiosqlite.Connection) -> PendingDraft | None:
+    """Atomic DELETE...RETURNING. Mirrors bot/why.py pattern."""
+    async with conn.execute(
+        "DELETE FROM kv WHERE key = ? RETURNING value", (_KV_KEY,),
+    ) as cur:
+        row = await cur.fetchone()
+    await conn.commit()
+    if row is None:
+        return None
+    return _decode_pending(row[0])
+
+
+async def expire_if_stale(
+    conn: aiosqlite.Connection, *, today_local: str,
+) -> bool:
+    """Drop pending draft if its local_date is < today. Returns True
+    iff a row was dropped."""
+    pending = await get_pending(conn)
+    if pending is None:
+        return False
+    if pending.local_date < today_local:
+        await clear_pending(conn)
+        log.info(
+            "expire_if_stale: dropped tweet draft from %s", pending.local_date,
+        )
+        return True
+    return False
