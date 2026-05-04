@@ -167,6 +167,8 @@ def render_capture_markdown(
     scrape_error = payload.get("scrape_error")
     if isinstance(scrape_error, str) and scrape_error.strip():
         fm["scrape_error"] = scrape_error.strip()
+    if isinstance(payload.get("tweetable"), bool):
+        fm["tweetable"] = bool(payload["tweetable"])
 
     frontmatter = "+++\n" + tomli_w.dumps(fm) + "+++\n"
 

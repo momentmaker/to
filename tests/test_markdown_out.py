@@ -277,3 +277,55 @@ async def test_asset_path_for_returns_none_without_asset(conn):
     assert asset_path_for(row) is None
     row2 = await _insert(conn, kind="text", raw="not even an image")
     assert asset_path_for(row2) is None
+
+
+import json as _json_for_tweetable_tests
+
+
+class _FakeRow(dict):
+    def __getitem__(self, key):
+        try:
+            return super().__getitem__(key)
+        except KeyError:
+            return None
+
+
+def _row_with_payload(payload_dict):
+    return _FakeRow(
+        id=1, kind="text", source=None, url=None,
+        raw="hello",
+        payload=_json_for_tweetable_tests.dumps(payload_dict),
+        processed="{}",
+        parent_id=None, telegram_msg_id=None,
+        created_at="2026-05-01T12:00:00Z", local_date="2026-05-01",
+        iso_week_key="2026-W18", fz_week_idx=1900,
+        status="done", error=None, github_sha=None,
+        asset_bytes=None, asset_mime=None,
+    )
+
+
+def test_tweetable_flag_rendered_in_frontmatter():
+    from bot.markdown_out import render_capture_markdown
+    md = render_capture_markdown(
+        _row_with_payload({"tweetable": True}),
+        why_children=[], highlight_children=[],
+    )
+    assert "tweetable = true" in md
+
+
+def test_tweetable_false_rendered():
+    from bot.markdown_out import render_capture_markdown
+    md = render_capture_markdown(
+        _row_with_payload({"tweetable": False}),
+        why_children=[], highlight_children=[],
+    )
+    assert "tweetable = false" in md
+
+
+def test_tweetable_omitted_when_unset():
+    from bot.markdown_out import render_capture_markdown
+    md = render_capture_markdown(
+        _row_with_payload({}),
+        why_children=[], highlight_children=[],
+    )
+    assert "tweetable" not in md
