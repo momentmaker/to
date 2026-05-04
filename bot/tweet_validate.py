@@ -68,3 +68,20 @@ def validate_stitch(text: str) -> tuple[bool, str | None]:
         return False, "sentence: more than one"
 
     return True, None
+
+
+_TWEET_MAX = 280
+_TCO_LEN = 23
+_URL_RE = re.compile(r"https?://\S+", flags=re.IGNORECASE)
+
+
+def validate_tweet_total_length(text: str) -> tuple[bool, str | None]:
+    """Enforce X's 280-grapheme hard limit. Each https?:// URL counts as
+    23 chars (t.co length) regardless of original length."""
+    s = text or ""
+    placeholder = "x" * _TCO_LEN
+    measured = _URL_RE.sub(placeholder, s)
+    n = grapheme.length(measured)
+    if n > _TWEET_MAX:
+        return False, f"length: {n} > {_TWEET_MAX}"
+    return True, None
