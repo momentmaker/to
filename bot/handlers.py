@@ -1410,10 +1410,13 @@ async def _resolve_capture_id(
     - target_value=None: the most recent capture, ignoring tweetable state.
     """
     if arg == "last":
+        # status='done' so we don't flag a half-processed capture that
+        # would then be invisible to pick_eligible_pool.
         if target_value is True:
             sql = (
                 "SELECT id FROM captures "
                 "WHERE kind NOT IN ('why','highlight') "
+                "  AND status = 'done' "
                 "  AND COALESCE(JSON_EXTRACT(payload, '$.tweetable'), 0) != 1 "
                 "ORDER BY id DESC LIMIT 1"
             )
@@ -1421,6 +1424,7 @@ async def _resolve_capture_id(
             sql = (
                 "SELECT id FROM captures "
                 "WHERE kind NOT IN ('why','highlight') "
+                "  AND status = 'done' "
                 "  AND COALESCE(JSON_EXTRACT(payload, '$.tweetable'), 0) = 1 "
                 "ORDER BY id DESC LIMIT 1"
             )
@@ -1428,6 +1432,7 @@ async def _resolve_capture_id(
             sql = (
                 "SELECT id FROM captures "
                 "WHERE kind NOT IN ('why','highlight') "
+                "  AND status = 'done' "
                 "ORDER BY id DESC LIMIT 1"
             )
         async with conn.execute(sql) as cur:

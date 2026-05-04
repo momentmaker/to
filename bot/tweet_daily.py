@@ -647,7 +647,29 @@ async def daily_tweet_draft_job(
     pool = await pick_eligible_pool(conn, settings=settings, today_iso=today_iso)
     if len(pool) < 2:
         log.info("daily_tweet_draft_job: pool < 2, no draft")
-        return f"pool too small ({len(pool)}) — flag more captures with /tweetable"
+        # Diagnose: how many captures are flagged tweetable but excluded?
+        async with conn.execute(
+            "SELECT COUNT(*) FROM captures "
+            "WHERE JSON_EXTRACT(payload, '$.tweetable') = 1"
+        ) as cur:
+            flagged_total = int((await cur.fetchone())[0])
+        async with conn.execute(
+            "SELECT COUNT(*) FROM captures "
+            "WHERE JSON_EXTRACT(payload, '$.tweetable') = 1 "
+            "  AND status = 'done'"
+        ) as cur:
+            flagged_done = int((await cur.fetchone())[0])
+        if flagged_total > flagged_done:
+            return (
+                f"pool too small ({len(pool)}). "
+                f"{flagged_total} captures /tweetable'd but only {flagged_done} "
+                "are status=done — others may be still processing or errored. "
+                "/status to check"
+            )
+        return (
+            f"pool too small ({len(pool)}, flagged={flagged_total}) — "
+            "flag more captures with /tweetable last"
+        )
 
     proposals = await detect_themes(
         pool_summary=format_pool_for_themes(pool),
