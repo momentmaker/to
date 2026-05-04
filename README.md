@@ -383,6 +383,15 @@ ledger plus `tweeted.json` at the captures repo root. The next
 day's selection biases toward themes used least often. Already-tweeted
 captures are never reused.
 
+**Self-tweet chains.** When today's draft theme matches the theme of
+a prior tweet in the ledger, `/post` ships it as a **reply to that
+prior tweet**. Twitter renders self-replies as a thread, so over
+months you grow visible chains of recurring thoughts on the same
+theme — the corpus's rhymes show up publicly without you composing
+threads by hand. The draft DM shows `🧵 reply to <url>` when a chain
+target was found; the bot reuses the existing `/post`/`/next`/`/edit`
+flow, just with `in_reply_to_tweet_id` set on the API call.
+
 **Cost.** ~$0.30–1/month of LLM allowance on top of existing usage:
 two `purpose=ingest` calls per draft (theme detection + spark) and one
 `purpose=tweet` call per stitch (rerolled by `/next`). Same providers

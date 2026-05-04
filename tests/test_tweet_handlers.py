@@ -45,7 +45,7 @@ async def test_post_handler_posts_and_writes_ledger(monkeypatch):
             local_date="2026-05-03",
         )
 
-        async def fake_post_tweet(text, *, settings):
+        async def fake_post_tweet(text, *, settings, in_reply_to_tweet_id=None):
             from bot.tweet import TweetResult
             return TweetResult(
                 id="1789", url="https://x.com/i/web/status/1789",
@@ -98,7 +98,7 @@ async def test_post_handler_post_failure_clears_pending(monkeypatch):
             local_date="2026-05-03",
         )
 
-        async def fake_post_tweet(text, *, settings):
+        async def fake_post_tweet(text, *, settings, in_reply_to_tweet_id=None):
             return None  # post fails
 
         monkeypatch.setattr(
@@ -222,7 +222,7 @@ async def test_edit_handler_posts_user_text_and_marks_edited(monkeypatch):
             local_date="2026-05-03",
         )
 
-        async def fake_post_tweet(text, *, settings):
+        async def fake_post_tweet(text, *, settings, in_reply_to_tweet_id=None):
             from bot.tweet import TweetResult
             return TweetResult(id="2", url="https://x.com/i/web/status/2")
 
@@ -454,3 +454,85 @@ async def test_draft_handler_preserves_pending_on_failure(monkeypatch):
         assert p is not None
         assert p.draft_text == "prior"
         assert p.capture_ids == [42, 43]
+
+
+@pytest.mark.asyncio
+async def test_post_handler_passes_chain_target_to_post_tweet(monkeypatch):
+    settings = fake_settings(
+        TELEGRAM_OWNER_ID=1,
+        X_CONSUMER_KEY="a", X_CONSUMER_SECRET="b",
+        X_ACCESS_TOKEN="c", X_ACCESS_TOKEN_SECRET="d",
+    )
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        await tweet_daily.set_pending(
+            conn,
+            draft_text="thread reply", capture_ids=[1, 2],
+            theme="privacy", stitch="s", char_count=10,
+            local_date="2026-05-03",
+            chain_target="prior_id_xyz",
+        )
+
+        captured: dict = {}
+
+        async def fake_post_tweet(text, *, settings, in_reply_to_tweet_id=None):
+            captured["in_reply_to"] = in_reply_to_tweet_id
+            from bot.tweet import TweetResult
+            return TweetResult(
+                id="new_id", url="https://x.com/i/web/status/new_id",
+            )
+
+        monkeypatch.setattr(
+            "bot.handlers.tweet_mod.post_tweet", fake_post_tweet,
+        )
+
+        async def no_push(**_):
+            pass
+        monkeypatch.setattr(
+            "bot.handlers.tweet_daily.push_ledger_to_repo", no_push,
+        )
+
+        update = _update("/post")
+        ctx = _ctx(conn=conn, settings=settings)
+        await handlers.post_handler(update, ctx)
+
+        assert captured["in_reply_to"] == "prior_id_xyz"
+
+
+@pytest.mark.asyncio
+async def test_post_handler_no_chain_target_passes_none(monkeypatch):
+    settings = fake_settings(TELEGRAM_OWNER_ID=1)
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        await tweet_daily.set_pending(
+            conn,
+            draft_text="standalone", capture_ids=[1, 2],
+            theme="t", stitch="s", char_count=10,
+            local_date="2026-05-03",
+            # no chain_target → None
+        )
+
+        captured: dict = {}
+
+        async def fake_post_tweet(text, *, settings, in_reply_to_tweet_id=None):
+            captured["in_reply_to"] = in_reply_to_tweet_id
+            from bot.tweet import TweetResult
+            return TweetResult(id="x", url="https://x.com/i/web/status/x")
+
+        monkeypatch.setattr(
+            "bot.handlers.tweet_mod.post_tweet", fake_post_tweet,
+        )
+
+        async def no_push(**_):
+            pass
+        monkeypatch.setattr(
+            "bot.handlers.tweet_daily.push_ledger_to_repo", no_push,
+        )
+
+        update = _update("/post")
+        ctx = _ctx(conn=conn, settings=settings)
+        await handlers.post_handler(update, ctx)
+
+        assert captured["in_reply_to"] is None
