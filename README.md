@@ -56,6 +56,11 @@ highlight - attach a passage to a capture (as reply)
 forget - delete a capture (id or "last")
 export - force weekly digest (opt-in)
 tweetweekly - post the weekly tweet from digest.md
+post - post the pending daily tweet draft
+next - regenerate the pending tweet draft
+edit - post your own version of the tweet draft
+tweetable - mark a capture as tweet-eligible
+untweetable - clear a capture's tweet-eligible flag
 setmark - override this week's mark
 setvow - set the year's vow
 skip - dismiss pending question
@@ -222,6 +227,11 @@ Then send anything — a line you overheard, a link, a photo of a book page, a v
 | `/setvow <text>` | Pin the line you want above the year in fz.ax |
 | `/export` | Force the weekly digest + fz.ax backup to regenerate now (opt-in cron; this always works regardless) |
 | `/tweetweekly [YYYY-wNN]` | Read `<week>/digest.md` from the captures repo and post a ≤260-char tweet drawn from it. Defaults to the current week. Use this if you run the digest locally — the auto-tweet only fires when the bot runs the digest itself |
+| `/post` | Post the current pending daily tweet draft to X. Writes the row to the SQLite ledger and pushes `tweeted.json` to the captures repo |
+| `/next` | Discard the pending draft and regenerate with a different capture pair. Capped at `TWEET_NEXT_CAP` regenerations per day |
+| `/edit <text>` | Post your own version of the pending draft. Subject only to X's 280-char hard limit |
+| `/tweetable last` · `/tweetable <id>` | Flag a capture as eligible for the daily tweet pool. v0 ships with no captures flagged — opt in retroactively |
+| `/untweetable last` · `/untweetable <id>` | Inverse of `/tweetable` |
 
 ---
 
@@ -310,6 +320,69 @@ See [`.claude/routines/daily.md`](.claude/routines/daily.md) for the full prompt
 
 ---
 
+## Daily tweet pipeline (opt-in)
+
+A morning DM the bot sends you with one suggested tweet — a single
+**orchurator stitch sentence** (1 sentence, ≤15 words, second-person
+only) plus 2-3 verbatim quotes from your own captures and their dates.
+Optionally with a URL when one of the captures was a link. You approve,
+regenerate, hand-edit, or skip. Nothing posts without your action.
+
+**Default-deny.** Out of the box the pool is empty: no capture is
+eligible until you flag it with `/tweetable last` (or `/tweetable <id>`).
+The pipeline itself is also off until you set
+`TWEET_DAILY_V2_ENABLED=true`. Both layers fail-safe.
+
+**The flow.**
+
+```
+09:00 local → bot DMs:
+
+  draft 1/5
+
+  you caught the asymmetry between what's kept on you and what you keep.
+
+  — "crazy last of privacy for employees" (2026-04-22)
+  — "didn't even know someone kept this data" (2026-04-21)
+
+  178/280 chars · theme: privacy-asymmetry
+
+  /post   /next   /edit <text>   /skip
+```
+
+`/post` ships it. `/next` discards and regenerates with a different
+capture pair (capped at `TWEET_NEXT_CAP=5` per day). `/edit <text>`
+posts your verbatim text instead, subject only to X's 280-char limit.
+`/skip` clears the draft. Ignored drafts silently expire at local
+midnight — no auto-post, no nag.
+
+**Verbatim by construction.** The orchurator stitch is the only
+original prose; the quotes are sliced from your capture bodies via
+prefix truncation, so the rendered quotes are always substrings of
+their source. The stitch is bounded by `bot/tweet_validate.py` —
+no advice verbs, no first-person, no hashtags, no emoji, no questions.
+
+**Theme self-balancing.** Each tweet records its theme in a SQLite
+ledger plus `tweeted.json` at the captures repo root. The next
+day's selection biases toward themes used least often. Already-tweeted
+captures are never reused.
+
+**Cost.** ~$0.30–1/month of LLM allowance on top of existing usage:
+two `purpose=ingest` calls per draft (theme detection + spark) and one
+`purpose=tweet` call per stitch (rerolled by `/next`). Same providers
+the bot already uses.
+
+To get started:
+
+1. Set `TWEET_DAILY_V2_ENABLED=true` (and X OAuth env vars). Redeploy.
+2. Run `/tweetable last` on a few captures you'd be happy to see in a
+   public tweet (or `/tweetable <id>` to flag specific older captures).
+3. Wait for the next 09:00 local DM.
+
+`/status` shows the pending draft + ledger total.
+
+---
+
 ## Configuration
 
 ### Required
@@ -385,6 +458,10 @@ LLM_PROVIDER_VISION=openai
 | `WHY_WINDOW_MINUTES` | `10` | After a URL save, how long to treat the next reply as the "why" |
 | `SPARKS_ENABLED` | `true` | Daily server-side spark selection. `false` disables the cron entirely. |
 | `SPARKS_LOCAL_TIME` | `06:00` | When the daily spark job runs. Picks yesterday's sharpest verbatim line and appends to `sparks.md` in the captures repo. |
+| `TWEET_DAILY_V2_ENABLED` | `false` | Master switch for the daily tweet pipeline. Default off. Boot disables this if X OAuth is missing. |
+| `TWEET_DRAFT_LOCAL_TIME` | `09:00` | When the bot DMs you the pending tweet draft for approval. |
+| `TWEET_NEXT_CAP` | `5` | Max `/next` regenerations per day before the bot tells you to `/post`, `/edit`, or `/skip`. |
+| `TWEET_POOL_DAYS` | `14` | Recency window for the eligible-pool query. If <2 captures fit the window, it expands to the full corpus. |
 
 ### Optional
 
