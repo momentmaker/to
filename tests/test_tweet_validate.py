@@ -117,3 +117,15 @@ def test_emoji_counts_as_one_grapheme():
     text281 = "🙂" * 281
     ok, reason = validate_tweet_total_length(text281)
     assert not ok
+
+
+def test_newline_in_stitch_fails():
+    _bad("you saw it\nand kept it.", "line break")
+
+
+def test_carriage_return_in_stitch_fails():
+    _bad("you saw it\r and kept it.", "line break")
+
+
+def test_unicode_line_separator_in_stitch_fails():
+    _bad("you saw it  and kept it.", "line break")

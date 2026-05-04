@@ -483,11 +483,18 @@ async def record_tweet(
     draft_count: int,
     edited: bool,
 ) -> None:
+    """Insert a row into the tweets ledger. Idempotent on tweet_id —
+    if the same id is submitted twice (e.g. X retried under the hood
+    and returned the prior tweet's id), the second call is a no-op
+    rather than an IntegrityError that would surface as a generic
+    handler failure with the pending state already cleared.
+    """
     await conn.execute(
         """
         INSERT INTO tweets (tweet_id, tweeted_at, local_date, capture_ids,
                             theme, stitch, text, draft_count, edited)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(tweet_id) DO NOTHING
         """,
         (tweet_id, tweeted_at, local_date, json.dumps(capture_ids),
          theme, stitch, text, draft_count, 1 if edited else 0),
