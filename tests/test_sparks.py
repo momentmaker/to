@@ -158,12 +158,8 @@ async def test_daily_sparks_job_writes_and_pushes(monkeypatch, tmp_path):
             captured["sha"] = existing_sha
             return "newsha"
 
-        monkeypatch.setattr(
-            "bot.github_sync.fetch_file", fake_fetch_file,
-        )
-        monkeypatch.setattr(
-            "bot.github_sync.put_file", fake_put_file,
-        )
+        monkeypatch.setattr("bot.sparks.fetch_file", fake_fetch_file)
+        monkeypatch.setattr("bot.sparks.put_file", fake_put_file)
 
         ok = await sparks.daily_sparks_job(
             conn=conn, settings=settings, providers=FakeProviders(),
