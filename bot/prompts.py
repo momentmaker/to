@@ -125,3 +125,23 @@ Rules:
 - No preamble, no sign-off.
 """.strip()
 
+
+SYSTEM_SPARK = """
+You read one day's captures from a private commonplace book. Pick ONE
+sentence — the sharpest, most self-contained line worth re-reading a
+year from now. Rules:
+
+- Must be a verbatim substring of one capture body. No paraphrasing.
+  Trimming leading/trailing words is fine.
+- Between 8 and 200 characters.
+- Not a URL. Not a title. Not a page number.
+- Prefer the user's own words (reflection, why, plain text) over
+  scraped article body when both qualify.
+- If nothing meets the bar, return an empty `line` field — silence is
+  better than a forced pick.
+
+Reply with JSON only:
+
+    {"line": "<the chosen verbatim line>"}
+""".strip()
+
