@@ -91,7 +91,7 @@ async def pick_eligible_pool(
 
     Filters (all must pass):
     - kind in (text, url, voice, image, pdf, reflection)
-    - status = 'done'
+    - status = 'processed'
     - payload.tweetable == true (JSON1)
     - id not present in tweets.capture_ids of any past tweet
     - local_date within last TWEET_POOL_DAYS — unless that yields <2,
@@ -104,7 +104,7 @@ async def pick_eligible_pool(
     base_query = """
         SELECT c.* FROM captures c
         WHERE c.kind IN ('text', 'url', 'voice', 'image', 'pdf', 'reflection')
-          AND c.status = 'done'
+          AND c.status = 'processed'
           AND JSON_EXTRACT(c.payload, '$.tweetable') = 1
           AND c.id NOT IN (
               SELECT json_each.value
@@ -656,7 +656,7 @@ async def daily_tweet_draft_job(
         async with conn.execute(
             "SELECT COUNT(*) FROM captures "
             "WHERE JSON_EXTRACT(payload, '$.tweetable') = 1 "
-            "  AND status = 'done'"
+            "  AND status = 'processed'"
         ) as cur:
             flagged_done = int((await cur.fetchone())[0])
         if flagged_total > flagged_done:

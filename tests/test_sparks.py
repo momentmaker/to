@@ -23,7 +23,7 @@ async def test_select_spark_returns_substring_of_a_capture(monkeypatch):
             INSERT INTO captures (kind, raw, payload, created_at, local_date,
                                   iso_week_key, fz_week_idx, status)
             VALUES ('text', 'crazy last of privacy for employees - literally like neo-serfs',
-                    '{}', '2026-04-22T12:00:00Z', '2026-04-22', '2026-W17', 1888, 'done')
+                    '{}', '2026-04-22T12:00:00Z', '2026-04-22', '2026-W17', 1888, 'processed')
             """
         )
         await conn.commit()
@@ -65,7 +65,7 @@ async def test_select_spark_skips_when_llm_pick_not_substring(monkeypatch):
             INSERT INTO captures (kind, raw, payload, created_at, local_date,
                                   iso_week_key, fz_week_idx, status)
             VALUES ('text', 'one capture body', '{}', '2026-04-22T12:00:00Z',
-                    '2026-04-22', '2026-W17', 1888, 'done')
+                    '2026-04-22', '2026-W17', 1888, 'processed')
             """
         )
         await conn.commit()
@@ -132,7 +132,7 @@ async def test_daily_sparks_job_writes_and_pushes(monkeypatch, tmp_path):
             INSERT INTO captures (kind, raw, payload, created_at, local_date,
                                   iso_week_key, fz_week_idx, status)
             VALUES ('text', 'a sharp line worth keeping', '{}',
-                    '2026-05-02T12:00:00Z', '2026-05-02', '2026-W18', 1900, 'done')
+                    '2026-05-02T12:00:00Z', '2026-05-02', '2026-W18', 1900, 'processed')
             """
         )
         await conn.commit()

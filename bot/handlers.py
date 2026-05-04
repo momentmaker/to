@@ -103,7 +103,7 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     config_line = f"dob: {settings.DOB}  |  tz: {settings.TIMEZONE}"
 
     # Capture status breakdown (helps diagnose pool=0 in the tweet
-    # pipeline: a flagged capture only counts when status='done').
+    # pipeline: a flagged capture only counts when status='processed').
     async with conn.execute(
         "SELECT status, COUNT(*) FROM captures "
         "WHERE kind NOT IN ('why','highlight') "
@@ -129,7 +129,7 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with conn.execute(
         "SELECT COUNT(*) FROM captures "
         "WHERE JSON_EXTRACT(payload, '$.tweetable') = 1 "
-        "  AND status = 'done' "
+        "  AND status = 'processed' "
         "  AND kind NOT IN ('why','highlight')"
     ) as cur:
         flagged_eligible = int((await cur.fetchone())[0])
@@ -1441,13 +1441,13 @@ async def _resolve_capture_id(
     - target_value=None: the most recent capture, ignoring tweetable state.
     """
     if arg == "last":
-        # status='done' so we don't flag a half-processed capture that
+        # status='processed' so we don't flag a half-processed capture that
         # would then be invisible to pick_eligible_pool.
         if target_value is True:
             sql = (
                 "SELECT id FROM captures "
                 "WHERE kind NOT IN ('why','highlight') "
-                "  AND status = 'done' "
+                "  AND status = 'processed' "
                 "  AND COALESCE(JSON_EXTRACT(payload, '$.tweetable'), 0) != 1 "
                 "ORDER BY id DESC LIMIT 1"
             )
@@ -1455,7 +1455,7 @@ async def _resolve_capture_id(
             sql = (
                 "SELECT id FROM captures "
                 "WHERE kind NOT IN ('why','highlight') "
-                "  AND status = 'done' "
+                "  AND status = 'processed' "
                 "  AND COALESCE(JSON_EXTRACT(payload, '$.tweetable'), 0) = 1 "
                 "ORDER BY id DESC LIMIT 1"
             )
@@ -1463,7 +1463,7 @@ async def _resolve_capture_id(
             sql = (
                 "SELECT id FROM captures "
                 "WHERE kind NOT IN ('why','highlight') "
-                "  AND status = 'done' "
+                "  AND status = 'processed' "
                 "ORDER BY id DESC LIMIT 1"
             )
         async with conn.execute(sql) as cur:

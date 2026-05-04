@@ -46,7 +46,7 @@ async def _load_candidates(
         SELECT raw, payload FROM captures
         WHERE local_date = ?
           AND kind IN ('text', 'reflection', 'url', 'voice', 'image', 'pdf')
-          AND status = 'done'
+          AND status = 'processed'
         ORDER BY id
         """,
         (local_date,),

@@ -34,7 +34,7 @@ async def _add_capture(conn, *, payload=None):
         INSERT INTO captures (kind, raw, payload, created_at, local_date,
                               iso_week_key, fz_week_idx, status, github_sha)
         VALUES ('text', 'body', ?, '2026-05-01T12:00:00Z', '2026-05-01',
-                '2026-W18', 1900, 'done', 'abc123')
+                '2026-W18', 1900, 'processed', 'abc123')
         """,
         (json.dumps(payload or {}),),
     )

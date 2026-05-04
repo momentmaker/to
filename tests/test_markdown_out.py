@@ -296,7 +296,7 @@ def _row_with_payload(payload_dict):
         parent_id=None, telegram_msg_id=None,
         created_at="2026-05-01T12:00:00Z", local_date="2026-05-01",
         iso_week_key="2026-W18", fz_week_idx=1900,
-        status="done", error=None, github_sha=None,
+        status="processed", error=None, github_sha=None,
         asset_bytes=None, asset_mime=None,
     )
 

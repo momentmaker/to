@@ -132,7 +132,7 @@ async def test_next_handler_increments_and_dms_new_draft(monkeypatch):
                 INSERT INTO captures (kind, raw, payload, created_at,
                                       local_date, iso_week_key, fz_week_idx,
                                       status)
-                VALUES ('text', ?, ?, ?, ?, ?, ?, 'done')
+                VALUES ('text', ?, ?, ?, ?, ?, ?, 'processed')
                 """,
                 (raw, json.dumps({"tweetable": True}),
                  "2026-05-01T12:00:00Z", "2026-05-01", "2026-W18", 1900),
@@ -329,7 +329,7 @@ async def test_draft_handler_force_fires_pipeline(monkeypatch):
                 INSERT INTO captures (kind, raw, payload, created_at,
                                       local_date, iso_week_key,
                                       fz_week_idx, status)
-                VALUES ('text', ?, ?, ?, ?, ?, ?, 'done')
+                VALUES ('text', ?, ?, ?, ?, ?, ?, 'processed')
                 """,
                 (raw, json.dumps({"tweetable": True}),
                  "2026-05-01T12:00:00Z", "2026-05-01",

@@ -15,7 +15,7 @@ async def _add_capture(
         """
         INSERT INTO captures (kind, raw, payload, created_at, local_date,
                               iso_week_key, fz_week_idx, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'done')
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'processed')
         """,
         (kind, raw, json.dumps(payload or {}),
          f"{local_date}T12:00:00Z", local_date, "2026-W18", 1900),
