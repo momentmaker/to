@@ -213,7 +213,7 @@ def test_build_scheduler_registers_expected_jobs(conn):
         conn=conn, settings=_settings(), providers=providers,
     )
     ids = {j.id for j in scheduler.get_jobs()}
-    assert ids == {"process_pending", "nightly_sync"}
+    assert ids == {"process_pending", "nightly_sync", "daily_sparks"}
     # Scheduler is NOT started — build should construct only.
     assert not scheduler.running
 

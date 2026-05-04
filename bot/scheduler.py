@@ -20,7 +20,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from bot import github_sync, process, reflection
+from datetime import timedelta
+
+from bot import github_sync, process, reflection, sparks
 from bot.config import Settings
 from bot.digest import weekly as digest_weekly
 from bot.llm.base import Message
@@ -336,6 +338,34 @@ def build_scheduler(
         coalesce=True,
         replace_existing=True,
     )
+
+    # Daily sparks: server-side replacement for the previously
+    # Routine-driven Step 4. Picks yesterday's sharpest verbatim line
+    # and appends to sparks.md in the captures repo.
+    if settings.SPARKS_ENABLED:
+        sh, sm = _parse_hhmm(settings.SPARKS_LOCAL_TIME)
+
+        async def _spark_wrapper():
+            today_local = local_date_for(
+                datetime.now(timezone.utc), settings.TIMEZONE,
+            )
+            yesterday = (today_local - timedelta(days=1)).isoformat()
+            try:
+                await sparks.daily_sparks_job(
+                    conn=conn, settings=settings,
+                    providers=providers, yesterday=yesterday,
+                )
+            except Exception:
+                log.exception("daily_sparks_job failed")
+
+        scheduler.add_job(
+            _spark_wrapper,
+            trigger=CronTrigger(hour=sh, minute=sm, timezone=settings.TIMEZONE),
+            id="daily_sparks",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
 
     # Daily prompt requires a bot to DM the owner; skip registration if we
     # don't have one (e.g. tests that only want the interval/cron jobs).

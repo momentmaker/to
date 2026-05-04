@@ -454,7 +454,7 @@ def test_build_scheduler_registers_weekly_reminder_by_default(conn):
     ids = {j.id for j in scheduler.get_jobs()}
     assert "weekly_digest" not in ids
     assert "weekly_reminder" in ids
-    assert ids == {"process_pending", "nightly_sync", "daily_prompt", "weekly_reminder"}
+    assert ids == {"process_pending", "nightly_sync", "daily_sparks", "daily_prompt", "weekly_reminder"}
 
 
 def test_build_scheduler_registers_weekly_digest_when_explicitly_enabled(conn):
@@ -469,7 +469,7 @@ def test_build_scheduler_registers_weekly_digest_when_explicitly_enabled(conn):
     # When opted in, we run the digest itself — no redundant reminder.
     assert "weekly_digest" in ids
     assert "weekly_reminder" not in ids
-    assert ids == {"process_pending", "nightly_sync", "daily_prompt", "weekly_digest"}
+    assert ids == {"process_pending", "nightly_sync", "daily_sparks", "daily_prompt", "weekly_digest"}
 
 
 @pytest.mark.asyncio

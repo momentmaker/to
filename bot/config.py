@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     WEEKLY_DIGEST_LOCAL_TIME: str = "22:00"
     WHY_WINDOW_MINUTES: int = 10
 
+    SPARKS_ENABLED: bool = True
+    SPARKS_LOCAL_TIME: str = "06:00"
+
     X_DAILY_ENABLED: bool = False
     X_WEEKLY_ENABLED: bool = False
     X_CONSUMER_KEY: str = ""
