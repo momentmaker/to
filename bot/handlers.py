@@ -11,7 +11,7 @@ from typing import Any
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from bot import db, forget, github_sync, image_resize, oracle, process, reflection, scheduler as sched_mod, tweet as tweet_mod, why
+from bot import db, forget, github_sync, image_resize, oracle, process, reflection, scheduler as sched_mod, tweet as tweet_mod, tweet_daily, why
 from bot.config import Settings
 from bot.digest import fz_state as fz_state_mod
 from bot.digest import validate as digest_validate
@@ -1139,3 +1139,56 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("something slipped. try again.")
         except Exception:
             pass
+
+
+# ---- daily tweet pipeline handlers ---------------------------------------
+
+
+async def post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _ensure_owner(update, context):
+        return
+    if update.message is None:
+        return
+    settings: Settings = context.bot_data["settings"]
+    conn = context.bot_data["db"]
+
+    consumed = await tweet_daily.consume_for_post(conn)
+    if consumed is None:
+        await update.message.reply_text("no draft pending.")
+        return
+
+    result = await tweet_mod.post_tweet(consumed.draft_text, settings=settings)
+    if result is None:
+        await update.message.reply_text(
+            "post failed (OAuth or X error). draft cleared — re-fire with /next tomorrow."
+        )
+        return
+
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    await tweet_daily.record_tweet(
+        conn,
+        tweet_id=result.id,
+        tweeted_at=now,
+        local_date=consumed.local_date,
+        capture_ids=consumed.capture_ids,
+        theme=consumed.theme or None,
+        stitch=consumed.stitch or None,
+        text=consumed.draft_text,
+        draft_count=consumed.draft_count,
+        edited=False,
+    )
+    try:
+        await tweet_daily.push_ledger_to_repo(
+            settings=settings,
+            record={
+                "tweet_id": result.id, "url": result.url,
+                "tweeted_at": now, "local_date": consumed.local_date,
+                "capture_ids": consumed.capture_ids,
+                "theme": consumed.theme, "stitch": consumed.stitch,
+                "text": consumed.draft_text, "edited": False,
+            },
+        )
+    except Exception:
+        log.exception("ledger push failed")
+
+    await update.message.reply_text(f"posted: {result.url}")
