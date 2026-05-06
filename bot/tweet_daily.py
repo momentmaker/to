@@ -68,13 +68,15 @@ label (privacy-asymmetry, automation-as-craft, tokens-and-art).
 Each proposal lists exactly 2-3 capture ids that share that theme.
 
 Be generous about what counts as a theme. Even loose conceptual
-rhymes — a shared mood, a recurring noun, a parallel observation —
-qualify. Return between 1 and 5 proposals whenever the pool has
-2 or more captures; return [] only when no two captures share
-ANY plausible thread (genuinely unrelated topics on different
-days).
+rhymes — a shared mood, a recurring noun, a parallel observation,
+a coincidental phrase — qualify. Same-day captures count too;
+captures collected close in time often share a preoccupation.
+Return between 1 and 5 proposals whenever the pool has 2 or more
+captures; return [] only when no two captures share ANY plausible
+thread.
 
-Reply with JSON only — an array, no prose:
+Reply with JSON only — an array of proposal objects, no prose,
+no wrapping object:
 
     [{"theme": "<label>", "capture_ids": [<id>, <id>],
       "rationale": "<one short sentence>"}]
@@ -134,22 +136,43 @@ async def detect_themes(
     providers: Providers,
     conn: aiosqlite.Connection,
 ) -> list[ThemeProposal]:
-    try:
-        response = await call_llm(
-            purpose="ingest",
-            system_blocks=[_THEME_DETECTION_PROMPT],
-            messages=[Message(role="user", content=pool_summary)],
-            max_tokens=600,
-            settings=settings, providers=providers, conn=conn,
+    """Up to 2 attempts. First empty/invalid response triggers a single
+    retry — Claude occasionally returns [] on borderline pools that a
+    second pass treats as valid. Logs the raw response when both
+    attempts fail so the cron path is no longer silent."""
+    raw_text = ""
+    parsed: Any = None
+    for _ in range(2):
+        try:
+            response = await call_llm(
+                purpose="ingest",
+                system_blocks=[_THEME_DETECTION_PROMPT],
+                messages=[Message(role="user", content=pool_summary)],
+                max_tokens=600,
+                settings=settings, providers=providers, conn=conn,
+            )
+        except Exception:
+            log.exception("detect_themes: LLM call failed")
+            return []
+        raw_text = response.text or ""
+        parsed = _coerce_json(raw_text)
+        # Tolerate {"proposals":[...]} / {"themes":[...]} wrappers — pull
+        # the first list value out of a dict response.
+        if isinstance(parsed, dict):
+            for v in parsed.values():
+                if isinstance(v, list):
+                    parsed = v
+                    break
+        if isinstance(parsed, list) and parsed:
+            break
+    if not isinstance(parsed, list) or not parsed:
+        log.info(
+            "detect_themes: no proposals after retry, raw=%r",
+            raw_text[:300],
         )
-    except Exception:
-        log.exception("detect_themes: LLM call failed")
-        return []
-    data = _coerce_json(response.text)
-    if not isinstance(data, list):
         return []
     out: list[ThemeProposal] = []
-    for item in data:
+    for item in parsed:
         if not isinstance(item, dict):
             continue
         theme = str(item.get("theme") or "").strip()

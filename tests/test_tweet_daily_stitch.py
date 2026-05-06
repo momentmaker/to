@@ -61,6 +61,67 @@ async def test_detect_themes_skips_proposals_with_wrong_capture_count(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_detect_themes_unwraps_dict_response(monkeypatch):
+    """Claude sometimes wraps the array in {"proposals":[...]}; tolerate it
+    instead of silently returning []."""
+    settings = fake_settings()
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+
+        async def fake_call(**kwargs):
+            class R:
+                text = json.dumps({
+                    "proposals": [
+                        {"theme": "kid", "capture_ids": [1, 2],
+                         "rationale": "both about childlike curiosity"},
+                    ]
+                })
+            return R()
+
+        monkeypatch.setattr("bot.tweet_daily.call_llm", fake_call)
+
+        proposals = await tweet_daily.detect_themes(
+            pool_summary="x", settings=settings,
+            providers=FakeProviders(), conn=conn,
+        )
+        assert [p.theme for p in proposals] == ["kid"]
+
+
+@pytest.mark.asyncio
+async def test_detect_themes_retries_once_on_empty(monkeypatch):
+    """First attempt returns []; second attempt returns proposals — keep
+    the second result instead of giving up after one shot."""
+    settings = fake_settings()
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+
+        calls = {"n": 0}
+
+        async def fake_call(**kwargs):
+            calls["n"] += 1
+            class R:
+                text = (
+                    "[]" if calls["n"] == 1
+                    else json.dumps([
+                        {"theme": "wonder", "capture_ids": [1, 2],
+                         "rationale": "shared awe"},
+                    ])
+                )
+            return R()
+
+        monkeypatch.setattr("bot.tweet_daily.call_llm", fake_call)
+
+        proposals = await tweet_daily.detect_themes(
+            pool_summary="x", settings=settings,
+            providers=FakeProviders(), conn=conn,
+        )
+        assert calls["n"] == 2
+        assert [p.theme for p in proposals] == ["wonder"]
+
+
+@pytest.mark.asyncio
 async def test_detect_themes_returns_empty_on_llm_failure(monkeypatch):
     settings = fake_settings()
     async with aiosqlite.connect(":memory:") as conn:
