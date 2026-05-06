@@ -67,13 +67,37 @@ themes that connect 2-3 of them. A "theme" is a short kebab-case
 label (privacy-asymmetry, automation-as-craft, tokens-and-art).
 Each proposal lists exactly 2-3 capture ids that share that theme.
 
-Be generous about what counts as a theme. Even loose conceptual
-rhymes — a shared mood, a recurring noun, a parallel observation,
-a coincidental phrase — qualify. Same-day captures count too;
-captures collected close in time often share a preoccupation.
+Be GENEROUS. Loose conceptual rhymes count: a shared mood, a
+recurring noun, a parallel observation, a coincidental phrase, a
+common abstract concept (curiosity, attention, fragility, craft,
+patience, scale, time, care). Surface-level domain differences
+(cooking vs. code, sand vs. AI) do NOT preclude a shared theme —
+look one layer down at what the captures are *about*. Same-day
+captures count; captures collected close in time often share a
+preoccupation.
+
 Return between 1 and 5 proposals whenever the pool has 2 or more
-captures; return [] only when no two captures share ANY plausible
-thread.
+captures. Return [] ONLY when no two captures share ANY plausible
+thread — a nearly impossible bar in practice. If you are about to
+return [], look once more for an abstract noun or mood that two
+captures share, and propose at least one theme.
+
+Example:
+  Pool:
+    [11] (text) made bread today, kneaded for 20 minutes
+    [12] (url) "Learning to debug is learning patience"
+    [13] (text) sat 40 minutes at 3am
+    [14] (url) NASA mosaic of 1.6M Mars images
+  Valid output:
+    [{"theme": "patient-craft",
+      "capture_ids": [11, 12],
+      "rationale": "kneading and debugging both reward sustained attention"},
+     {"theme": "duration-as-substance",
+      "capture_ids": [11, 13],
+      "rationale": "20-min knead and 40-min sit both make time the medium"},
+     {"theme": "scale-shifts",
+      "capture_ids": [13, 14],
+      "rationale": "private 40-min sit and 1.6M-image mosaic both reframe scale"}]
 
 Reply with JSON only — an array of proposal objects, no prose,
 no wrapping object:
