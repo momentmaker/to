@@ -47,10 +47,7 @@ async def test_daily_tweet_draft_job_full_flow(monkeypatch):
                 pass
             r = R()
             if purpose == "ingest":
-                r.text = json.dumps([
-                    {"theme": "privacy", "capture_ids": [1, 2],
-                     "rationale": "both"},
-                ])
+                r.text = json.dumps({"theme": "privacy"})
             else:
                 r.text = json.dumps({"stitch": "you caught it."})
             return r

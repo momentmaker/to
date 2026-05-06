@@ -1287,62 +1287,41 @@ async def next_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    proposals = await tweet_daily.detect_themes(
-        pool_summary=tweet_daily.format_pool_for_themes(pool),
-        settings=settings, providers=providers, conn=conn,
+    captures = tweet_daily.select_for_draft(
+        pool, exclude_ids=set(pending.capture_ids), n=3,
     )
-    if not proposals:
+    theme = await tweet_daily.name_theme(
+        captures, settings=settings, providers=providers, conn=conn,
+    )
+    draft = await tweet_daily.try_build_draft(
+        captures=captures, theme=theme,
+        settings=settings, providers=providers, conn=conn,
+        weekday=weekday,
+    )
+    if draft is None:
         await update.message.reply_text(
             "couldn't generate a draft — try /next again or /skip."
         )
         return
 
-    used = set(pending.capture_ids)
-    fresh = [p for p in proposals if not (set(p.capture_ids) & used)]
-    proposals = fresh or proposals  # fall back to overlap if exhausted
-
-    chosen = await tweet_daily.pick_theme(proposals, conn=conn)
-    candidates = [chosen] + [p for p in proposals if p is not chosen]
-    pool_by_id = {r["id"]: r for r in pool}
-
-    for proposal in candidates:
-        captures = [
-            pool_by_id[i] for i in proposal.capture_ids if i in pool_by_id
-        ][:2]
-        if len(captures) < 2:
-            continue
-        draft = await tweet_daily.try_build_draft(
-            captures=captures, theme=proposal.theme,
-            settings=settings, providers=providers, conn=conn,
-            weekday=weekday,
-        )
-        if draft is None:
-            continue
-        chain_target = await tweet_daily.find_chain_target(
-            conn, theme=proposal.theme,
-        )
-        new_count = await tweet_daily.update_for_next(
-            conn,
-            draft_text=draft["text"],
-            capture_ids=[c["id"] for c in captures],
-            theme=proposal.theme,
-            stitch=draft["stitch"],
+    chain_target = await tweet_daily.find_chain_target(conn, theme=theme)
+    new_count = await tweet_daily.update_for_next(
+        conn,
+        draft_text=draft["text"],
+        capture_ids=[c["id"] for c in captures],
+        theme=theme,
+        stitch=draft["stitch"],
+        char_count=draft["char_count"],
+        chain_target=chain_target,
+    )
+    await update.message.reply_text(
+        tweet_daily.render_draft_dm(
+            draft_text=draft["text"], theme=theme,
             char_count=draft["char_count"],
+            draft_count=new_count or pending.draft_count + 1,
+            cap=settings.TWEET_NEXT_CAP,
             chain_target=chain_target,
         )
-        await update.message.reply_text(
-            tweet_daily.render_draft_dm(
-                draft_text=draft["text"], theme=proposal.theme,
-                char_count=draft["char_count"],
-                draft_count=new_count or pending.draft_count + 1,
-                cap=settings.TWEET_NEXT_CAP,
-                chain_target=chain_target,
-            )
-        )
-        return
-
-    await update.message.reply_text(
-        "couldn't generate a draft — try /next again or /skip."
     )
 
 

@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, NamedTuple
 
@@ -38,11 +37,7 @@ _KV_KEY = "pending_tweet_draft"
 _LEDGER_FILENAME = "tweeted.json"
 
 
-@dataclass
-class ThemeProposal:
-    theme: str
-    capture_ids: list[int]
-    rationale: str
+_THEME_FALLBACK = "loose-rhyme"
 
 
 def _coerce_json(raw: str) -> Any:
@@ -61,49 +56,24 @@ def _coerce_json(raw: str) -> Any:
             return None
 
 
-_THEME_DETECTION_PROMPT = """\
-You read a pool of recent commonplace-book captures and propose
-themes that connect 2-3 of them. A "theme" is a short kebab-case
-label (privacy-asymmetry, automation-as-craft, tokens-and-art).
-Each proposal lists exactly 2-3 capture ids that share that theme.
+_THEME_NAMING_PROMPT = """\
+You are given 2-3 commonplace-book captures the user collected
+recently. Name a theme connecting them — a short kebab-case label
+(privacy-asymmetry, automation-as-craft, patient-craft,
+hidden-uniqueness, scale-shifts, childlike-wonder).
 
-Be GENEROUS. Loose conceptual rhymes count: a shared mood, a
-recurring noun, a parallel observation, a coincidental phrase, a
-common abstract concept (curiosity, attention, fragility, craft,
-patience, scale, time, care). Surface-level domain differences
-(cooking vs. code, sand vs. AI) do NOT preclude a shared theme —
-look one layer down at what the captures are *about*. Same-day
-captures count; captures collected close in time often share a
-preoccupation.
+Look one layer beneath surface domains: cooking and code can both
+be "patient-craft"; a sand grain and a 40-minute sit can both be
+"hidden-uniqueness". Common abstract anchors: curiosity, attention,
+fragility, craft, patience, scale, time, care, play, wonder.
 
-Return between 1 and 5 proposals whenever the pool has 2 or more
-captures. Return [] ONLY when no two captures share ANY plausible
-thread — a nearly impossible bar in practice. If you are about to
-return [], look once more for an abstract noun or mood that two
-captures share, and propose at least one theme.
+You are NOT being asked whether a theme exists — the captures have
+already been picked and a label is required. If the captures truly
+share nothing, return "loose-rhyme" rather than refusing.
 
-Example:
-  Pool:
-    [11] (text) made bread today, kneaded for 20 minutes
-    [12] (url) "Learning to debug is learning patience"
-    [13] (text) sat 40 minutes at 3am
-    [14] (url) NASA mosaic of 1.6M Mars images
-  Valid output:
-    [{"theme": "patient-craft",
-      "capture_ids": [11, 12],
-      "rationale": "kneading and debugging both reward sustained attention"},
-     {"theme": "duration-as-substance",
-      "capture_ids": [11, 13],
-      "rationale": "20-min knead and 40-min sit both make time the medium"},
-     {"theme": "scale-shifts",
-      "capture_ids": [13, 14],
-      "rationale": "private 40-min sit and 1.6M-image mosaic both reframe scale"}]
+Reply with JSON only, no prose, no wrapping object:
 
-Reply with JSON only — an array of proposal objects, no prose,
-no wrapping object:
-
-    [{"theme": "<label>", "capture_ids": [<id>, <id>],
-      "rationale": "<one short sentence>"}]
+    {"theme": "<kebab-case-label>"}
 """
 
 
@@ -153,91 +123,72 @@ async def pick_eligible_pool(
         return list(await cur.fetchall())
 
 
-async def detect_themes(
+_THEME_LABEL_RE = re.compile(r"[^a-z0-9-]+")
+
+
+def _normalize_theme(raw: str) -> str:
+    """Coerce an LLM-supplied label into kebab-case ASCII. Stripped to
+    empty → caller decides fallback."""
+    s = (raw or "").strip().lower()
+    s = _THEME_LABEL_RE.sub("-", s).strip("-")
+    return s
+
+
+def select_for_draft(
+    pool: list[aiosqlite.Row],
     *,
-    pool_summary: str,
+    exclude_ids: set[int] | None = None,
+    n: int = 3,
+) -> list[aiosqlite.Row]:
+    """Take the n most-recent captures, skipping any in `exclude_ids`.
+    `pool` is assumed already ordered most-recent-first. Falls back to
+    pool[:n] when the exclusion would leave fewer than 2 captures —
+    overlap is preferable to no draft at all (e.g. /next on a 4-pool
+    where 3 are already used)."""
+    excl = exclude_ids or set()
+    fresh = [r for r in pool if r["id"] not in excl]
+    if len(fresh) >= 2:
+        return fresh[:n]
+    return pool[:n]
+
+
+async def name_theme(
+    captures: list[aiosqlite.Row],
+    *,
     settings: Settings,
     providers: Providers,
     conn: aiosqlite.Connection,
-) -> list[ThemeProposal]:
-    """Up to 2 attempts. First empty/invalid response triggers a single
-    retry — Claude occasionally returns [] on borderline pools that a
-    second pass treats as valid. Logs the raw response when both
-    attempts fail so the cron path is no longer silent."""
+) -> str:
+    """Given 2-3 captures, ask the LLM to name the theme that connects
+    them. Always returns a non-empty kebab-case label — falls back to
+    `_THEME_FALLBACK` on any LLM/parse failure rather than blocking the
+    pipeline. Logs the raw response on fallback for diagnostic."""
+    body = format_pool_for_themes(captures)
     raw_text = ""
-    parsed: Any = None
-    for _ in range(2):
-        try:
-            response = await call_llm(
-                purpose="ingest",
-                system_blocks=[_THEME_DETECTION_PROMPT],
-                messages=[Message(role="user", content=pool_summary)],
-                max_tokens=600,
-                settings=settings, providers=providers, conn=conn,
-            )
-        except Exception:
-            log.exception("detect_themes: LLM call failed")
-            return []
-        raw_text = response.text or ""
-        parsed = _coerce_json(raw_text)
-        # Tolerate {"proposals":[...]} / {"themes":[...]} wrappers — pull
-        # the first list value out of a dict response.
-        if isinstance(parsed, dict):
-            for v in parsed.values():
-                if isinstance(v, list):
-                    parsed = v
-                    break
-        if isinstance(parsed, list) and parsed:
-            break
-    if not isinstance(parsed, list) or not parsed:
-        log.info(
-            "detect_themes: no proposals after retry, raw=%r",
-            raw_text[:300],
+    try:
+        response = await call_llm(
+            purpose="ingest",
+            system_blocks=[_THEME_NAMING_PROMPT],
+            messages=[Message(role="user", content=body)],
+            max_tokens=80,
+            settings=settings, providers=providers, conn=conn,
         )
-        return []
-    out: list[ThemeProposal] = []
-    for item in parsed:
-        if not isinstance(item, dict):
-            continue
-        theme = str(item.get("theme") or "").strip()
-        ids = item.get("capture_ids") or []
-        if not theme or not isinstance(ids, list):
-            continue
-        try:
-            ids_int = [int(x) for x in ids]
-        except (TypeError, ValueError):
-            continue
-        if not (2 <= len(ids_int) <= 3):
-            continue
-        out.append(ThemeProposal(
-            theme=theme,
-            capture_ids=ids_int,
-            rationale=str(item.get("rationale") or ""),
-        ))
-    return out
+        raw_text = response.text or ""
+    except Exception:
+        log.exception("name_theme: LLM call failed")
+        return _THEME_FALLBACK
 
-
-async def pick_theme(
-    proposals: list[ThemeProposal],
-    *,
-    conn: aiosqlite.Connection,
-) -> ThemeProposal | None:
-    """Pick the proposal whose theme has been used least often in the
-    ledger. Ties broken by proposal order (LLM ranking)."""
-    if not proposals:
-        return None
-    histogram: dict[str, int] = {}
-    async with conn.execute(
-        "SELECT theme, COUNT(*) FROM tweets "
-        "WHERE theme IS NOT NULL GROUP BY theme"
-    ) as cur:
-        for row in await cur.fetchall():
-            histogram[str(row[0])] = int(row[1])
-
-    def usage(p: ThemeProposal) -> tuple[int, int]:
-        return histogram.get(p.theme, 0), proposals.index(p)
-
-    return sorted(proposals, key=usage)[0]
+    parsed = _coerce_json(raw_text)
+    if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+        parsed = parsed[0]
+    if not isinstance(parsed, dict):
+        log.info("name_theme: non-dict response, raw=%r", raw_text[:200])
+        return _THEME_FALLBACK
+    label = _normalize_theme(str(parsed.get("theme") or ""))
+    if not label:
+        log.info("name_theme: empty label, raw=%r", raw_text[:200])
+        return _THEME_FALLBACK
+    return label
 
 
 async def generate_stitch(
@@ -812,57 +763,42 @@ async def daily_tweet_draft_job(
             "flag more captures with /tweetable last"
         )
 
-    proposals = await detect_themes(
-        pool_summary=format_pool_for_themes(pool),
-        settings=settings, providers=providers, conn=conn,
+    captures = select_for_draft(pool, n=3)
+    theme = await name_theme(
+        captures, settings=settings, providers=providers, conn=conn,
     )
-    if not proposals:
-        log.info("daily_tweet_draft_job: no theme proposals")
-        return "no theme proposals — captures may be too dissimilar"
+    draft = await try_build_draft(
+        captures=captures, theme=theme,
+        settings=settings, providers=providers, conn=conn,
+        weekday=weekday,
+    )
+    if draft is None:
+        log.info("daily_tweet_draft_job: stitch validators rejected draft")
+        return "stitch validators rejected (3 retries)"
 
-    chosen = await pick_theme(proposals, conn=conn)
-    candidates = [chosen] + [p for p in proposals if p is not chosen]
-    pool_by_id = {r["id"]: r for r in pool}
-
-    for proposal in candidates:
-        captures = [
-            pool_by_id[i] for i in proposal.capture_ids if i in pool_by_id
-        ][:2]
-        if len(captures) < 2:
-            continue
-        draft = await try_build_draft(
-            captures=captures, theme=proposal.theme,
-            settings=settings, providers=providers, conn=conn,
-            weekday=weekday,
+    chain_target = await find_chain_target(conn, theme=theme)
+    await set_pending(
+        conn,
+        draft_text=draft["text"],
+        capture_ids=[c["id"] for c in captures],
+        theme=theme,
+        stitch=draft["stitch"],
+        char_count=draft["char_count"],
+        local_date=today_iso,
+        chain_target=chain_target,
+    )
+    try:
+        await bot.send_message(
+            chat_id=settings.TELEGRAM_OWNER_ID,
+            text=render_draft_dm(
+                draft_text=draft["text"], theme=theme,
+                char_count=draft["char_count"], draft_count=1,
+                cap=settings.TWEET_NEXT_CAP,
+                chain_target=chain_target,
+            ),
         )
-        if draft is None:
-            continue
-        chain_target = await find_chain_target(conn, theme=proposal.theme)
-        await set_pending(
-            conn,
-            draft_text=draft["text"],
-            capture_ids=[c["id"] for c in captures],
-            theme=proposal.theme,
-            stitch=draft["stitch"],
-            char_count=draft["char_count"],
-            local_date=today_iso,
-            chain_target=chain_target,
-        )
-        try:
-            await bot.send_message(
-                chat_id=settings.TELEGRAM_OWNER_ID,
-                text=render_draft_dm(
-                    draft_text=draft["text"], theme=proposal.theme,
-                    char_count=draft["char_count"], draft_count=1,
-                    cap=settings.TWEET_NEXT_CAP,
-                    chain_target=chain_target,
-                ),
-            )
-        except Exception:
-            log.exception("daily_tweet_draft_job: bot.send_message failed")
-            await clear_pending(conn)
-            return "Telegram send failed"
-        return None
-
-    log.info("daily_tweet_draft_job: no proposal produced a valid draft")
-    return "stitch validators rejected all candidates (3 retries each)"
+    except Exception:
+        log.exception("daily_tweet_draft_job: bot.send_message failed")
+        await clear_pending(conn)
+        return "Telegram send failed"
+    return None

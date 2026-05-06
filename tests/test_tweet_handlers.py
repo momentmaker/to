@@ -373,9 +373,11 @@ async def test_draft_handler_force_fires_pipeline(monkeypatch):
         assert len(sent) == 1
         assert "you saw both." in sent[0][1]
         # Pending now reflects the new draft (capture_ids 1,2 — not 99).
+        # Order is most-recent-first since select_for_draft preserves
+        # pool order (DESC by date/id).
         p = await tweet_daily.get_pending(conn)
         assert p is not None
-        assert p.capture_ids == [1, 2]
+        assert sorted(p.capture_ids) == [1, 2]
 
 
 @pytest.mark.asyncio
