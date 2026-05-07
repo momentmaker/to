@@ -89,9 +89,13 @@ async def pick_eligible_pool(
     - kind in (text, url, voice, image, pdf, reflection)
     - status = 'processed'
     - payload.tweetable == true (JSON1)
-    - id not present in tweets.capture_ids of any past tweet
     - local_date within last TWEET_POOL_DAYS — unless that yields <2,
       in which case fall back to the full corpus.
+
+    Captures already used in past tweets are NOT excluded — they are
+    sorted to the bottom of the pool. select_for_draft takes the head,
+    so fresh captures are still preferred; reused only surface when
+    fresh runs out.
     """
     today_iso = today_iso or date.today().isoformat()
     today = date.fromisoformat(today_iso)
@@ -102,24 +106,25 @@ async def pick_eligible_pool(
         WHERE c.kind IN ('text', 'url', 'voice', 'image', 'pdf', 'reflection')
           AND c.status = 'processed'
           AND JSON_EXTRACT(c.payload, '$.tweetable') = 1
-          AND c.id NOT IN (
+    """
+    order_clause = """
+        ORDER BY
+          (c.id IN (
               SELECT json_each.value
               FROM tweets, json_each(tweets.capture_ids)
-          )
+          )) ASC,
+          c.local_date DESC, c.id DESC
     """
 
     async with conn.execute(
-        base_query
-        + " AND c.local_date >= ? ORDER BY c.local_date DESC, c.id DESC",
+        base_query + " AND c.local_date >= ? " + order_clause,
         (window_start,),
     ) as cur:
         recent = list(await cur.fetchall())
     if len(recent) >= 2:
         return recent
 
-    async with conn.execute(
-        base_query + " ORDER BY c.local_date DESC, c.id DESC",
-    ) as cur:
+    async with conn.execute(base_query + order_clause) as cur:
         return list(await cur.fetchall())
 
 
@@ -138,7 +143,7 @@ def select_for_draft(
     pool: list[aiosqlite.Row],
     *,
     exclude_ids: set[int] | None = None,
-    n: int = 3,
+    n: int = 2,
 ) -> list[aiosqlite.Row]:
     """Take the n most-recent captures, skipping any in `exclude_ids`.
     `pool` is assumed already ordered most-recent-first. Falls back to
@@ -763,7 +768,7 @@ async def daily_tweet_draft_job(
             "flag more captures with /tweetable last"
         )
 
-    captures = select_for_draft(pool, n=3)
+    captures = select_for_draft(pool, n=2)
     theme = await name_theme(
         captures, settings=settings, providers=providers, conn=conn,
     )

@@ -1288,7 +1288,7 @@ async def next_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     captures = tweet_daily.select_for_draft(
-        pool, exclude_ids=set(pending.capture_ids), n=3,
+        pool, exclude_ids=set(pending.capture_ids), n=2,
     )
     theme = await tweet_daily.name_theme(
         captures, settings=settings, providers=providers, conn=conn,

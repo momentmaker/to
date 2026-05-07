@@ -67,7 +67,9 @@ async def test_pool_excludes_why_and_highlight():
 
 
 @pytest.mark.asyncio
-async def test_pool_excludes_already_tweeted():
+async def test_pool_demotes_already_tweeted_to_bottom():
+    """Reused captures stay in the pool but sort below fresh ones, so
+    select_for_draft (which takes the head) prefers fresh."""
     settings = fake_settings()
     async with aiosqlite.connect(":memory:") as conn:
         conn.row_factory = aiosqlite.Row
@@ -84,7 +86,31 @@ async def test_pool_excludes_already_tweeted():
         )
         await conn.commit()
         rows = await tweet_daily.pick_eligible_pool(conn, settings=settings)
-        assert [r["raw"] for r in rows] == ["b"]
+        # Fresh first (b), reused last (a) — both still present.
+        assert [r["raw"] for r in rows] == ["b", "a"]
+
+
+@pytest.mark.asyncio
+async def test_pool_returns_only_reused_when_no_fresh():
+    """All flagged captures already tweeted? Surface them anyway —
+    better to risk repetition than to dry up the pipeline."""
+    settings = fake_settings()
+    async with aiosqlite.connect(":memory:") as conn:
+        conn.row_factory = aiosqlite.Row
+        await init_schema(conn)
+        await _add_capture(conn, raw="a", payload={"tweetable": True})
+        await _add_capture(conn, raw="b", payload={"tweetable": True})
+        await conn.execute(
+            """
+            INSERT INTO tweets (tweet_id, tweeted_at, local_date,
+                                capture_ids, text, draft_count)
+            VALUES ('t1', '2026-05-01T01:00:00Z', '2026-05-01', '[1,2]',
+                    'tweet', 1)
+            """
+        )
+        await conn.commit()
+        rows = await tweet_daily.pick_eligible_pool(conn, settings=settings)
+        assert {r["raw"] for r in rows} == {"a", "b"}
 
 
 @pytest.mark.asyncio
