@@ -39,12 +39,17 @@ def split_sentences(text: str) -> list[str]:
     text = (text or "").strip()
     if not text:
         return []
-    # Split on sentence enders, flatten across newlines. Paragraphs are
-    # joined so multi-line quotes still count as single sentences when the
-    # source fragment happens to wrap.
-    flat = _WS_RE.sub(" ", text).strip()
-    pieces = _SENTENCE_SPLIT.split(flat)
-    return [p.strip() for p in pieces if p.strip()]
+    # Split on newlines first — captures often have no trailing punctuation,
+    # so when the LLM stacks them line-by-line each line is its own sentence.
+    # Within a line, split on `.!?` for prose that does end sentences properly.
+    out: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        flat = _WS_RE.sub(" ", line)
+        out.extend(p.strip() for p in _SENTENCE_SPLIT.split(flat) if p.strip())
+    return out
 
 
 def validate_quote_only(

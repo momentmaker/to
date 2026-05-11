@@ -101,6 +101,44 @@ def test_validate_quote_only_rejects_empty_essay():
     assert offenders
 
 
+def test_split_sentences_breaks_on_newlines():
+    """Captures often lack trailing punctuation. When the LLM joins multiple
+    captures with a newline, the validator must treat each line as its own
+    sentence, not concatenate into a mega-sentence at the eventual period.
+    """
+    text = "first capture no punct\nsecond capture also bare\nthird ends here."
+    assert split_sentences(text) == [
+        "first capture no punct",
+        "second capture also bare",
+        "third ends here.",
+    ]
+
+
+def test_split_sentences_breaks_on_blank_paragraph_breaks():
+    text = "para one no punct\n\npara two also bare"
+    assert split_sentences(text) == ["para one no punct", "para two also bare"]
+
+
+def test_validate_quote_only_passes_newline_joined_unpunctuated_captures():
+    """Regression: week 2103 failed because the LLM joined four short captures
+    with newlines (none ending in .!?). The old splitter flattened newlines to
+    spaces, then split on the eventual `.`, treating the whole block as one
+    sentence not present in the corpus.
+    """
+    corpus = [
+        "yes there should've been lots of guards into messing with prod anything with ai",
+        "it's a new era for what it is to be a dev",
+        "looks cool - you can self-host it too",
+    ]
+    essay = (
+        "yes there should've been lots of guards into messing with prod anything with ai\n"
+        "it's a new era for what it is to be a dev\n"
+        "looks cool - you can self-host it too."
+    )
+    ok, offenders = validate_quote_only(essay, corpus)
+    assert ok, offenders
+
+
 def test_validate_quote_only_rejects_punctuation_only_essay():
     """Regression: an essay like '...' has one 'sentence' that normalizes to
     empty. Previously the loop skipped it, offenders stayed empty, and the
