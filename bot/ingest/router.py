@@ -77,16 +77,70 @@ async def scrape_url(url: str, *, settings: Settings) -> UrlScrapeResult:
 
     if kind == "hn":
         item_id = hn.extract_item_id(url)
-        if item_id is not None:
-            story = await hn.fetch_story(item_id)
-            if story is not None:
-                return UrlScrapeResult(
-                    source="hn",
-                    payload=hn.to_payload(story),
-                    content=hn.to_processing_content(story),
-                )
+        story = await hn.fetch_story(item_id) if item_id is not None else None
+        if story is None:
+            # R7: HN fetch itself failed — unchanged bare-url contract.
+            return UrlScrapeResult(
+                source="hn", payload={}, content=url, error="hn fetch failed",
+            )
+
+        hn_payload = hn.to_payload(story)
+        hn_content = hn.to_processing_content(story)
+
+        # R2: self-post (Ask/Show/Tell HN), no outbound link — the HN thread
+        # IS the capture. Unchanged.
+        if not story.url:
+            return UrlScrapeResult(
+                source="hn", payload=hn_payload, content=hn_content,
+            )
+
+        # R3: outbound link is itself a routable source (tweet / video /
+        # reddit / another HN item). Don't deep-scrape it — canonical points
+        # at the real thing, content stays the HN discussion + bare link.
+        if classify_url(story.url) != "generic":
+            return UrlScrapeResult(
+                source="hn",
+                payload=hn_payload,
+                content=hn_content,
+                canonical_url=story.url,
+            )
+
+        # R4: plain article — scrape it with the same robustness a directly
+        # pasted article gets (shared _extract_article). R6: any failure,
+        # including an unforeseen raise from the helper, degrades to the HN
+        # discussion rather than breaking the capture.
+        try:
+            article, _ = await _extract_article(story.url, settings=settings)
+        except Exception as e:
+            log.debug("hn article extract raised for %s: %s", story.url, e)
+            article = None
+
+        if article is None:
+            return UrlScrapeResult(
+                source="hn",
+                payload=hn_payload,
+                content=hn_content,
+                canonical_url=story.url,
+                error="article extraction failed; HN discussion retained",
+            )
+
+        # R4 success: the article body is the capture. HN story + comments
+        # stay nested in the payload as discourse (R5); article title/text
+        # surface at the top level so the weekly-digest / daily-tweet
+        # shape-readers pick them up, same as a directly-pasted article.
         return UrlScrapeResult(
-            source="hn", payload={}, content=url, error="hn fetch failed",
+            source="hn",
+            payload={
+                **hn_payload,
+                "title": article.title,
+                "text": article.text,
+                "method": article.method,
+            },
+            content=(
+                (article.title + "\n\n" + article.text)
+                if article.title else article.text
+            ),
+            canonical_url=story.url,
         )
 
     if kind == "x":
