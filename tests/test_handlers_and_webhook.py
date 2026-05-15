@@ -699,3 +699,91 @@ def test_webhook_accepts_correct_secret_token():
         )
     assert r.status_code == 200
     bot_app.process_update.assert_awaited_once()
+
+
+# --- U4: handler title selection for article-primary HN captures ---
+
+
+async def _run_hn_capture(conn, scrape, msg_id):
+    """Drive text_message_handler with a patched HN scrape; return the
+    title handed to the capture-time why? task and the saved source."""
+    import asyncio as _asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from bot.handlers import text_message_handler
+    from bot.config import Settings
+
+    settings = Settings(TELEGRAM_OWNER_ID=42, DOB="1990-01-01", TIMEZONE="UTC")
+
+    update = MagicMock()
+    update.effective_user = MagicMock(); update.effective_user.id = 42
+    update.message = MagicMock()
+    update.message.text = "https://news.ycombinator.com/item?id=42"
+    update.message.message_id = msg_id
+    update.message.forward_origin = None
+    update.message.chat = MagicMock()
+    update.message.chat.type = "private"
+    update.message.chat.id = 99
+    update.message.reply_text = AsyncMock()
+
+    context = MagicMock()
+    context.bot = MagicMock()
+    context.bot_data = {"settings": settings, "db": conn, "providers": MagicMock()}
+
+    why_mock = AsyncMock()
+    with patch("bot.handlers.scrape_url", AsyncMock(return_value=scrape)), \
+         patch("bot.handlers._ask_and_set_pending_why", why_mock), \
+         patch("bot.handlers._process_in_background", AsyncMock()):
+        await text_message_handler(update, context)
+        pending = [t for t in _asyncio.all_tasks() if t is not _asyncio.current_task()]
+        for t in pending:
+            try:
+                await t
+            except Exception:
+                pass
+
+    async with conn.execute(
+        "SELECT source FROM captures WHERE telegram_msg_id = ?", (msg_id,)
+    ) as cur:
+        row = await cur.fetchone()
+    title = why_mock.call_args.kwargs["title"] if why_mock.call_args else None
+    return title, (row["source"] if row else None)
+
+
+@pytest.mark.asyncio
+async def test_hn_article_primary_titled_by_article_source_stays_hn(conn):
+    # AE1 + AE6: article-primary HN payload → why? gets the article title,
+    # source frontmatter stays hn.
+    from bot.ingest.router import UrlScrapeResult
+
+    scrape = UrlScrapeResult(
+        source="hn",
+        payload={
+            "story": {"title": "HN thread title"},
+            "comments": [],
+            "title": "The Real Article",
+            "text": "article body",
+            "method": "readability",
+        },
+        content="The Real Article\n\narticle body",
+        canonical_url="https://blog.example.com/x",
+    )
+    title, source = await _run_hn_capture(conn, scrape, 9700)
+    assert title == "The Real Article"
+    assert source == "hn"
+
+
+@pytest.mark.asyncio
+async def test_hn_discourse_only_titled_by_story(conn):
+    # Routable / scrape-fail / Ask HN: no top-level title → fall back to the
+    # nested HN story title.
+    from bot.ingest.router import UrlScrapeResult
+
+    scrape = UrlScrapeResult(
+        source="hn",
+        payload={"story": {"title": "HN thread title"}, "comments": []},
+        content="HN thread title\n\n--- top comments ---",
+        canonical_url="https://x.com/a/status/1",
+    )
+    title, source = await _run_hn_capture(conn, scrape, 9701)
+    assert title == "HN thread title"
+    assert source == "hn"
