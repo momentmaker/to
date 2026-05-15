@@ -45,3 +45,61 @@ def test_classify_text_text_vs_url():
     assert classify_text("just a plain line i heard") == ("text", None)
     k, u = classify_text("https://example.com/a is worth a read")
     assert k == "url" and u == "https://example.com/a"
+
+
+# --- Characterization: generic-article branch of scrape_url (U2 refactor guard) ---
+
+import types
+from unittest.mock import AsyncMock, patch
+
+from bot.config import Settings
+from bot.ingest.router import scrape_url
+
+_GEN_URL = "https://blog.example.com/post"
+
+
+def _article(title, text, method):
+    return types.SimpleNamespace(title=title, text=text, method=method)
+
+
+async def test_scrape_url_generic_clean_extraction():
+    settings = Settings(TELEGRAM_OWNER_ID=42, DOB="1990-01-01", TIMEZONE="UTC")
+    art = _article("A Title", "the body", "readability")
+    with patch("bot.ingest.router.generic.extract_article", AsyncMock(return_value=art)):
+        r = await scrape_url(_GEN_URL, settings=settings)
+    assert r.source == "article"
+    assert r.payload == {"title": "A Title", "text": "the body", "method": "readability"}
+    assert r.content == "A Title\n\nthe body"
+    assert r.error is None
+    assert r.canonical_url is None
+
+
+async def test_scrape_url_generic_total_failure_no_zyte():
+    settings = Settings(TELEGRAM_OWNER_ID=42, DOB="1990-01-01", TIMEZONE="UTC")
+    with patch(
+        "bot.ingest.router.generic.extract_article",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    ):
+        r = await scrape_url(_GEN_URL, settings=settings)
+    assert r.source == "article"
+    assert r.payload == {}
+    assert r.content == _GEN_URL
+    assert r.error == "boom"
+
+
+async def test_scrape_url_generic_raw_retries_via_zyte():
+    settings = Settings(
+        TELEGRAM_OWNER_ID=42, DOB="1990-01-01", TIMEZONE="UTC", ZYTE_API_KEY="zk"
+    )
+    raw = _article(None, "thin", "raw")
+    good = _article("Zyte Title", "zyte body", "trafilatura")
+    with patch(
+        "bot.ingest.router.generic.extract_article", AsyncMock(return_value=raw)
+    ), patch(
+        "bot.ingest.router.zyte.extract_with_zyte", AsyncMock(return_value=good)
+    ):
+        r = await scrape_url(_GEN_URL, settings=settings)
+    assert r.payload["method"] == "trafilatura"
+    assert r.payload["title"] == "Zyte Title"
+    assert r.content == "Zyte Title\n\nzyte body"
+    assert r.error is None
