@@ -39,6 +39,34 @@ class UrlScrapeResult:
     canonical_url: str | None = None
 
 
+async def _extract_article(
+    url: str, *, settings: Settings
+) -> tuple[Any, str | None]:
+    """Readable-article extraction: generic first, Zyte retry on thin/raw.
+
+    Returns (article, error). `article` is the extracted object (with
+    .title/.text/.method) or None on total failure; `error` is a short
+    diagnostic string or None. Shared by the generic-article branch and the
+    HN branch so an HN-discovered article gets the same robustness as a
+    directly-pasted one.
+    """
+    try:
+        article = await generic.extract_article(url)
+    except Exception as e:
+        article = None
+        error: str | None = str(e)[:200]
+    else:
+        error = None
+
+    needs_retry = article is None or article.method == "raw"
+    if needs_retry and settings.ZYTE_API_KEY:
+        zyte_article = await zyte.extract_with_zyte(url, api_key=settings.ZYTE_API_KEY)
+        if zyte_article is not None and zyte_article.method != "raw":
+            article = zyte_article
+            error = None
+    return article, error
+
+
 async def scrape_url(url: str, *, settings: Settings) -> UrlScrapeResult:
     """Route a URL to the right scraper based on its shape.
 
@@ -163,22 +191,7 @@ async def scrape_url(url: str, *, settings: Settings) -> UrlScrapeResult:
         )
 
     # generic article
-    try:
-        article = await generic.extract_article(url)
-    except Exception as e:
-        article = None
-        generic_error: str | None = str(e)[:200]
-    else:
-        generic_error = None
-
-    # If generic came back with thin/raw content and Zyte is configured, retry via Zyte.
-    needs_retry = article is None or article.method == "raw"
-    if needs_retry and settings.ZYTE_API_KEY:
-        zyte_article = await zyte.extract_with_zyte(url, api_key=settings.ZYTE_API_KEY)
-        if zyte_article is not None and zyte_article.method != "raw":
-            article = zyte_article
-            generic_error = None
-
+    article, generic_error = await _extract_article(url, settings=settings)
     if article is None:
         return UrlScrapeResult(
             source="article",
