@@ -410,7 +410,9 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         source = scrape.source
         if scrape.canonical_url:
             save_url = scrape.canonical_url
-        # HN payloads nest title under "story"; article/reddit/x have it at top level.
+        # Prefer a top-level title (article/reddit/x, and an article-primary
+        # HN capture where the scraped article's title sits top-level); fall
+        # back to the nested HN story title for discourse-only HN captures.
         if isinstance(scrape.payload, dict):
             scrape_title = (
                 scrape.payload.get("title")
