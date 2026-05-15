@@ -67,6 +67,24 @@ async def _extract_article(
     return article, error
 
 
+def _article_fields(article: Any) -> tuple[dict[str, Any], str]:
+    """Shared (payload, content) shape for a successfully extracted article.
+
+    The generic-article branch and the HN article-primary branch both build
+    this; sharing it keeps the two from drifting if the shape changes.
+    """
+    payload = {
+        "title": article.title,
+        "text": article.text,
+        "method": article.method,
+    }
+    content = (
+        (article.title + "\n\n" + article.text)
+        if article.title else article.text
+    )
+    return payload, content
+
+
 async def scrape_url(url: str, *, settings: Settings) -> UrlScrapeResult:
     """Route a URL to the right scraper based on its shape.
 
@@ -79,7 +97,7 @@ async def scrape_url(url: str, *, settings: Settings) -> UrlScrapeResult:
         item_id = hn.extract_item_id(url)
         story = await hn.fetch_story(item_id) if item_id is not None else None
         if story is None:
-            # R7: HN fetch itself failed — unchanged bare-url contract.
+            # R7: HN fetch itself failed — bare-url contract.
             return UrlScrapeResult(
                 source="hn", payload={}, content=url, error="hn fetch failed",
             )
@@ -88,7 +106,7 @@ async def scrape_url(url: str, *, settings: Settings) -> UrlScrapeResult:
         hn_content = hn.to_processing_content(story)
 
         # R2: self-post (Ask/Show/Tell HN), no outbound link — the HN thread
-        # IS the capture. Unchanged.
+        # IS the capture.
         if not story.url:
             return UrlScrapeResult(
                 source="hn", payload=hn_payload, content=hn_content,
@@ -128,18 +146,11 @@ async def scrape_url(url: str, *, settings: Settings) -> UrlScrapeResult:
         # stay nested in the payload as discourse (R5); article title/text
         # surface at the top level so the weekly-digest / daily-tweet
         # shape-readers pick them up, same as a directly-pasted article.
+        art_payload, art_content = _article_fields(article)
         return UrlScrapeResult(
             source="hn",
-            payload={
-                **hn_payload,
-                "title": article.title,
-                "text": article.text,
-                "method": article.method,
-            },
-            content=(
-                (article.title + "\n\n" + article.text)
-                if article.title else article.text
-            ),
+            payload={**hn_payload, **art_payload},
+            content=art_content,
             canonical_url=story.url,
         )
 
@@ -254,12 +265,5 @@ async def scrape_url(url: str, *, settings: Settings) -> UrlScrapeResult:
             error=generic_error or "article extraction failed",
         )
 
-    return UrlScrapeResult(
-        source="article",
-        payload={
-            "title": article.title,
-            "text": article.text,
-            "method": article.method,
-        },
-        content=(article.title + "\n\n" + article.text) if article.title else article.text,
-    )
+    art_payload, art_content = _article_fields(article)
+    return UrlScrapeResult(source="article", payload=art_payload, content=art_content)
