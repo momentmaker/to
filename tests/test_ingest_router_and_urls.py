@@ -203,6 +203,25 @@ async def test_hn_article_failure_falls_back_to_discourse():
     assert "story" in r.payload and "title" not in r.payload
 
 
+async def test_hn_raw_extraction_falls_back_to_discourse():
+    # method=="raw" is a failed extraction (readability+trafilatura both
+    # failed, no Zyte key). Don't let a junk raw blob replace the HN
+    # discussion — degrade like any other failure (R6).
+    raw = _article(None, "garbled raw text", "raw")
+    with patch(
+        "bot.ingest.router.hn.fetch_story",
+        AsyncMock(return_value=_story(url="https://blog.example.com/x")),
+    ), patch(
+        "bot.ingest.router._extract_article", AsyncMock(return_value=(raw, None))
+    ):
+        r = await scrape_url(_HN_URL, settings=_settings())
+    assert r.canonical_url == "https://blog.example.com/x"
+    assert "HN Title" in r.content
+    assert "garbled raw text" not in r.content
+    assert r.error == "article extraction failed; HN discussion retained"
+    assert "story" in r.payload and "title" not in r.payload
+
+
 async def test_hn_article_helper_raise_degrades_not_propagates():
     # R6: an unforeseen raise from the helper must not break the capture.
     with patch(

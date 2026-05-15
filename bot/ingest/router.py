@@ -124,16 +124,18 @@ async def scrape_url(url: str, *, settings: Settings) -> UrlScrapeResult:
             )
 
         # R4: plain article — scrape it with the same robustness a directly
-        # pasted article gets (shared _extract_article). R6: any failure,
-        # including an unforeseen raise from the helper, degrades to the HN
-        # discussion rather than breaking the capture.
+        # pasted article gets (shared _extract_article). R6: any failure —
+        # None, an unforeseen raise, or a raw-text fallback (method == "raw",
+        # which happens when readability+trafilatura both fail and no Zyte
+        # key is configured) — degrades to the HN discussion rather than
+        # replacing it with a junk body.
         try:
             article, _ = await _extract_article(story.url, settings=settings)
         except Exception as e:
             log.debug("hn article extract raised for %s: %s", story.url, e)
             article = None
 
-        if article is None:
+        if article is None or article.method == "raw":
             return UrlScrapeResult(
                 source="hn",
                 payload=hn_payload,
