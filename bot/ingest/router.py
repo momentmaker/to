@@ -33,6 +33,10 @@ class UrlScrapeResult:
     payload: dict[str, Any]
     content: str
     error: str | None = None
+    # The URL to persist as the capture's canonical link. None means "use the
+    # URL the user pasted". Only HN sets this — when an HN story links out, the
+    # outbound article is the thing worth saving, not the HN permalink.
+    canonical_url: str | None = None
 
 
 async def scrape_url(url: str, *, settings: Settings) -> UrlScrapeResult:

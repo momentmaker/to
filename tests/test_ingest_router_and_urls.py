@@ -1,5 +1,10 @@
-from bot.ingest.router import classify_text
+from bot.ingest.router import UrlScrapeResult, classify_text
 from bot.ingest.urls import classify_url, extract_url
+
+
+def test_url_scrape_result_canonical_url_defaults_none():
+    r = UrlScrapeResult(source="article", payload={}, content="body")
+    assert r.canonical_url is None
 
 
 def test_classify_url_recognizes_hn():

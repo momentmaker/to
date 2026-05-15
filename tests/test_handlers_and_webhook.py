@@ -367,6 +367,48 @@ async def test_text_message_handler_routes_urls_through_scraper(conn):
 
 
 @pytest.mark.asyncio
+async def test_text_message_handler_saves_canonical_url_when_scraper_resolves_one(conn):
+    from unittest.mock import AsyncMock, patch
+    from bot.handlers import text_message_handler
+    from bot.config import Settings
+    from bot.ingest.router import UrlScrapeResult
+
+    settings = Settings(TELEGRAM_OWNER_ID=42, DOB="1990-01-01", TIMEZONE="UTC")
+
+    update = MagicMock()
+    update.effective_user = MagicMock()
+    update.effective_user.id = 42
+    update.message = MagicMock()
+    update.message.text = "https://news.ycombinator.com/item?id=42"
+    update.message.message_id = 9100
+    update.message.forward_origin = None
+    update.message.chat = MagicMock()
+    update.message.chat.type = "private"
+    update.message.reply_text = AsyncMock()
+
+    context = MagicMock()
+    context.bot_data = {"settings": settings, "db": conn}
+
+    fake_scrape = UrlScrapeResult(
+        source="hn",
+        payload={"story": {"title": "Discussed Article"}, "comments": []},
+        content="Discussed Article\n\nbody",
+        canonical_url="https://realsite.com/the-article",
+    )
+    with patch("bot.handlers.scrape_url", AsyncMock(return_value=fake_scrape)):
+        await text_message_handler(update, context)
+
+    async with conn.execute(
+        "SELECT source, url FROM captures WHERE telegram_msg_id = ?", (9100,)
+    ) as cur:
+        row = await cur.fetchone()
+    assert row is not None
+    # canonical_url wins over the pasted HN permalink; source stays hn (R8).
+    assert row["url"] == "https://realsite.com/the-article"
+    assert row["source"] == "hn"
+
+
+@pytest.mark.asyncio
 async def test_text_message_handler_skips_llm_when_scrape_fails_and_content_is_just_url(conn):
     """Scrape failure leaves processing_content == raw URL. Don't waste tokens
     running ingest over a bare URL string.

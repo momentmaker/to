@@ -399,6 +399,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     processing_content: str = text
     source = "telegram"
     scrape_title: str | None = None
+    save_url = url
 
     if kind == "url" and url is not None:
         scrape = await scrape_url(url, settings=settings)
@@ -407,6 +408,8 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             payload["scrape_error"] = scrape.error
         processing_content = scrape.content or text
         source = scrape.source
+        if scrape.canonical_url:
+            save_url = scrape.canonical_url
         # HN payloads nest title under "story"; article/reddit/x have it at top level.
         if isinstance(scrape.payload, dict):
             scrape_title = (
@@ -418,7 +421,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         conn,
         kind=kind,
         source=source,
-        url=url,
+        url=save_url,
         raw=text,
         payload=payload or None,
         telegram_msg_id=update.message.message_id,
@@ -461,7 +464,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if kind == "url" and url is not None and providers is not None:
         asyncio.create_task(
             _ask_and_set_pending_why(
-                parent_id=capture_id, url=url, title=scrape_title,
+                parent_id=capture_id, url=save_url, title=scrape_title,
                 settings=settings, providers=providers, conn=conn,
                 bot=context.bot, chat_id=update.message.chat.id,
             )
