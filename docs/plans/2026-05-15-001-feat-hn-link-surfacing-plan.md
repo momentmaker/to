@@ -1,7 +1,7 @@
 ---
 title: "feat: HN link surfacing — article-primary captures with HN discourse"
 type: feat
-status: active
+status: completed
 date: 2026-05-15
 origin: docs/brainstorms/hn-link-surfacing-requirements.md
 ---
