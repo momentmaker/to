@@ -190,3 +190,46 @@ def _now_iso() -> str:
 def serialize(state: dict[str, Any]) -> str:
     """Deterministic JSON for a stable file on GitHub (fewer spurious diffs)."""
     return json.dumps(state, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def merge_remote_weeks(
+    db_state: dict[str, Any], remote_raw: str | dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Fold weeks/anchors from the remote backup into the DB-derived state.
+
+    `build_fz_state` only knows weeks the bot processed in its own sqlite DB.
+    Weeks anchored by the user's local `/weekly` (Claude Code) are written
+    straight to GitHub and never enter that DB, so a blind bot push would
+    clobber them. Union the two: a week present in both is owned by the bot
+    (DB wins), but any remote-only week is preserved. Anchors are unioned and
+    re-sorted. Malformed/absent remote content is ignored — never let a parse
+    error drop the bot's own data.
+    """
+    if isinstance(remote_raw, str):
+        try:
+            remote = json.loads(remote_raw)
+        except (ValueError, TypeError):
+            return db_state
+    elif isinstance(remote_raw, dict):
+        remote = remote_raw
+    else:
+        return db_state
+
+    remote_state = remote.get("state") if isinstance(remote, dict) else None
+    if not isinstance(remote_state, dict):
+        return db_state
+
+    state = db_state["state"]
+    weeks = state["weeks"]
+    for key, entry in (remote_state.get("weeks") or {}).items():
+        if key not in weeks and isinstance(entry, dict):
+            weeks[key] = entry
+
+    anchors = set(state.get("anchors") or [])
+    for a in remote_state.get("anchors") or []:
+        try:
+            anchors.add(int(a))
+        except (ValueError, TypeError):
+            continue
+    state["anchors"] = sorted(anchors)
+    return db_state

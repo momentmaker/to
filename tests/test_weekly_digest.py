@@ -327,7 +327,8 @@ async def test_export_pushes_fz_backup_via_probe_then_push(conn):
         probe_and_push_calls.append(kwargs)
         return "new-sha"
     with patch("bot.digest.weekly._put_with_auto_sha",
-               AsyncMock(side_effect=_fake_auto)):
+               AsyncMock(side_effect=_fake_auto)), \
+         patch("bot.github_sync.fetch_file", AsyncMock(return_value=None)):
         ok = await weekly.weekly_digest_job(
             conn=conn, settings=settings, providers=providers, bot=bot,
             fz_week=1888,
@@ -337,6 +338,57 @@ async def test_export_pushes_fz_backup_via_probe_then_push(conn):
     paths = {c["path"] for c in probe_and_push_calls}
     assert "fz-ax-backup.json" in paths
     assert any("digest.md" in p for p in paths)
+
+
+@pytest.mark.asyncio
+async def test_export_does_not_clobber_remote_only_weeks(conn):
+    """Regression: the bot rebuilds the backup from its sqlite DB only. A
+    week the user anchored via a local /weekly run lives on GitHub but not
+    in the DB. The push must merge it in, not overwrite it away."""
+    import json as _json
+    from bot.digest import fz_state
+
+    await _insert_text_capture(
+        conn, fz_week_idx=1888, raw="the only fragment",
+    )
+    prov = _StubProv([
+        json.dumps({"essay": "The only fragment.", "whisper": "x", "mark": "☲"}),
+    ])
+    providers = Providers(prov, None)
+    bot = MagicMock(); bot.send_message = AsyncMock()
+    settings = _settings(GITHUB_TOKEN="ghp_test", GITHUB_REPO="u/r")
+
+    remote_backup = fz_state.serialize({
+        "fzAxBackup": True,
+        "exportedAt": "2026-05-01T00:00:00Z",
+        "state": {
+            "version": 1, "dob": "1990-01-15",
+            "weeks": {"2101": {"mark": "🌊", "whisper": "user-only week"}},
+            "vow": None, "letters": [], "anchors": [2101],
+            "prefs": {}, "meta": {"createdAt": "2026-01-01T00:00:00Z"},
+        },
+    })
+
+    pushed: list[dict] = []
+    async def _capture(**kwargs):
+        pushed.append(kwargs)
+        return "new-sha"
+
+    with patch("bot.digest.weekly._put_with_auto_sha",
+               AsyncMock(side_effect=_capture)), \
+         patch("bot.github_sync.fetch_file",
+               AsyncMock(return_value=(remote_backup, "old-sha"))):
+        ok = await weekly.weekly_digest_job(
+            conn=conn, settings=settings, providers=providers, bot=bot,
+            fz_week=1888,
+        )
+
+    assert ok is True
+    backup_push = next(c for c in pushed if c["path"] == "fz-ax-backup.json")
+    merged = _json.loads(backup_push["content"])["state"]
+    assert "2101" in merged["weeks"], "user-only week was clobbered"
+    assert merged["weeks"]["2101"]["mark"] == "🌊"
+    assert 2101 in merged["anchors"]
 
 
 @pytest.mark.asyncio
@@ -516,7 +568,8 @@ async def test_export_stores_returned_sha_on_weekly_row(conn):
     settings = _settings(GITHUB_TOKEN="ghp_test", GITHUB_REPO="u/r")
 
     with patch("bot.digest.weekly._put_with_auto_sha",
-               AsyncMock(return_value="returned-sha")):
+               AsyncMock(return_value="returned-sha")), \
+         patch("bot.github_sync.fetch_file", AsyncMock(return_value=None)):
         await weekly.weekly_digest_job(
             conn=conn, settings=settings, providers=providers, bot=bot,
             fz_week=1888,

@@ -239,3 +239,53 @@ def test_serialize_is_deterministic_and_utf8():
     assert s1 == s2
     assert s1.endswith("\n")
     assert "☲" in s1  # non-ASCII preserved, not escaped
+
+
+def _backup(weeks: dict, anchors: list[int]) -> dict:
+    return {
+        "fzAxBackup": True,
+        "exportedAt": "2026-05-01T00:00:00Z",
+        "state": {
+            "version": 1, "dob": "1990-01-15", "weeks": weeks,
+            "vow": None, "letters": [], "anchors": anchors,
+            "prefs": {}, "meta": {"createdAt": "2026-01-01T00:00:00Z"},
+        },
+    }
+
+
+def test_merge_remote_weeks_preserves_weeks_only_on_remote():
+    """Regression: bot rebuilds backup from its DB only. Weeks anchored by
+    the user's local /weekly (never in the bot DB) must survive the push."""
+    db_state = _backup(
+        {"2103": {"mark": "🎨", "whisper": "w19"}}, [2103],
+    )
+    remote = fz_state.serialize(_backup(
+        {
+            "2101": {"mark": "🌊", "whisper": "w17"},
+            "2102": {"mark": "歩", "whisper": "w18"},
+        },
+        [2101, 2102],
+    ))
+
+    merged = fz_state.merge_remote_weeks(db_state, remote)
+    weeks = merged["state"]["weeks"]
+    assert set(weeks) == {"2101", "2102", "2103"}
+    assert weeks["2101"]["mark"] == "🌊"
+    assert merged["state"]["anchors"] == [2101, 2102, 2103]
+
+
+def test_merge_remote_weeks_db_wins_on_conflict():
+    db_state = _backup({"2103": {"mark": "NEW", "whisper": "db"}}, [2103])
+    remote = fz_state.serialize(_backup(
+        {"2103": {"mark": "OLD", "whisper": "remote"}}, [2103],
+    ))
+    merged = fz_state.merge_remote_weeks(db_state, remote)
+    assert merged["state"]["weeks"]["2103"]["mark"] == "NEW"
+
+
+def test_merge_remote_weeks_tolerates_missing_or_garbage_remote():
+    db_state = _backup({"2103": {"mark": "🎨"}}, [2103])
+    for bad in (None, "", "not json", "{}", '{"state": {}}'):
+        merged = fz_state.merge_remote_weeks(db_state, bad)
+        assert merged["state"]["weeks"] == {"2103": {"mark": "🎨"}}
+        assert merged["state"]["anchors"] == [2103]

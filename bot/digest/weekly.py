@@ -422,6 +422,16 @@ async def _push_weekly_artifacts(
     # bot push; probing always reflects whatever is on GitHub right now.
     try:
         state = await fz_state.build_fz_state(conn=conn, settings=settings)
+        # The DB only knows weeks the bot processed. Fold in any weeks the
+        # user anchored via a local /weekly run (present on GitHub, absent
+        # from the bot DB) so this push doesn't clobber them. A failed GET
+        # raises and the outer except skips the push — safer than overwriting
+        # blind.
+        existing = await github_sync.fetch_file(
+            settings=settings, path="fz-ax-backup.json",
+        )
+        if existing is not None:
+            state = fz_state.merge_remote_weeks(state, existing[0])
         serialized = fz_state.serialize(state)
         new_sha = await _put_with_auto_sha(
             settings=settings,
